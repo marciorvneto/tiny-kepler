@@ -1,1 +1,8 @@
 out
+
+*.png
+*.jpg
+
+compile_commands.json
+.clangd
+.cache

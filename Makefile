@@ -1,12 +1,27 @@
 OUT_DIR := ./out
 
-C_FLAGS := -g
+CFLAGS := -g
+CPPFLAGS := -I.
+LDFLAGS := -lm
 
-$(OUT_DIR)/main: main.c | $(OUT_DIR)
-	$(CC) $(C_FLAGS) -o $@ $<
+EXAMPLES := $(wildcard examples/*.c)
+EXAMPLES_BINS := $(patsubst examples/%.c, $(OUT_DIR)/%, $(EXAMPLES))
 
-all: main
+all: $(OUT_DIR)/main $(EXAMPLES_BINS)
+
+$(OUT_DIR)/main: main.c ./tiny-kepler.h| $(OUT_DIR) 
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $< ${LDFLAGS}
+
+$(OUT_DIR)/%: examples/%.c ./tiny-kepler.h | $(OUT_DIR)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $< ${LDFLAGS}
+
+
 
 $(OUT_DIR):
 	@mkdir -p $(OUT_DIR)
+
+.PHONY: all clean
+
+clean:
+	@rm -rf ./out
 
