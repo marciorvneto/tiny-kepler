@@ -23,5 +23,5 @@ $(OUT_DIR):
 .PHONY: all clean
 
 clean:
-	@rm -rf ./out
+		@find . -path "$(OUT_DIR)/*" -not -name "*.py" -delete
 
