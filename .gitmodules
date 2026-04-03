@@ -1,0 +1,3 @@
+[submodule "vendor/tinyla"]
+	path = vendor/tinyla
+	url = git@github.com:marciorvneto/tinyla.git

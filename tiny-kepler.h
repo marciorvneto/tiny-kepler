@@ -5,7 +5,9 @@
 #include <stdlib.h>
 
 #define ALIGN 16
-#define PUSH_ALIGN(offset, align) (offset + (align - 1)) & (~align)
+#define PUSH_ALIGN(offset, align) (offset + (align - 1)) & (~(align-1))
+
+const double __G = 6.6743e-20; // km3/kg/s2
 
 //====================
 //
@@ -49,6 +51,14 @@ void rk4_step(double t, double dt, double *y, ode_fun_t fun, size_t dim_y,
 typedef void accel_fn_t(double *pos, double *accel, void *ctx);
 void verlet_step(double t, double dt, double *y, accel_fn_t accel,
                  size_t n_dimensions, void *ctx, double *scratch);
+
+//========================
+//
+//    Orbital mechanics
+//
+//========================
+
+double circular_orbital_velocity(double mu, double r);
 
 #ifdef TINY_KEPLER_IMPLEMENTATION
 
@@ -153,6 +163,17 @@ void verlet_step(double t, double dt, double *y, accel_fn_t accel,
     vel[i] += 0.5 * a[i] * dt;
   }
 }
+
+//========================
+//
+//    Orbital mechanics
+//
+//========================
+
+double circular_orbital_velocity(double mu, double r){
+	return sqrt(mu / r);
+}
+
 
 #endif
 

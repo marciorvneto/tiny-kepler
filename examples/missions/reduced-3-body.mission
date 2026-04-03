@@ -1,0 +1,27 @@
+// Basic simulation parameters
+// TODO: add support for TBP and NBODY
+SIM_TYPE CR3BP
+SIM_TIME 3000
+
+// Entities definition
+// body id name mass_kg radius_km [orbital_radius_km]
+// The spacecraft does not need to be defined
+// As it's always assigned an id = 0
+ENTITIES
+BODY 1 Earth 5.972e24 6378
+BODY 2 Moon  7.348e22 1737.4 384400
+
+// Spacecraft initial state (relative to body 1)
+// Position: 200km parking orbit
+// Velocity: circular orbit around Earth
+INITIAL_STATE
+POS 0 6578   0 0
+VEL 0 CIRCULAR(0, 1)
+
+// Events definition
+// General formula AT time_s <EVENT>
+// General formula WHEN <TRIGGER> [ONCE] <EVENT>
+EVENTS
+//AT   START        DRAW_HOLD LAGRANGE_POINTS(1,2)
+WHEN PERIAPSIS(1) ONCE      MANEUVER DELTA_V 1.4 PROGRADE
+

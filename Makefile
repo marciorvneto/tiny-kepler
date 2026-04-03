@@ -1,7 +1,7 @@
 OUT_DIR := ./out
 
 CFLAGS := -g
-CPPFLAGS := -I.
+CPPFLAGS := -I. -I./vendor/tinyla
 LDFLAGS := -lm
 
 EXAMPLES := $(wildcard examples/*.c)

@@ -44,12 +44,12 @@ int main(int argc, char **argv) {
   const char *method = (argc > 1) ? argv[1] : "rk4";
 
   GravParams params = {.mu = 1.0};
-  double y[4] = {0.5, 0.0, 0.0, sqrt(3.0)};
+  double y[4] = {0.5, 0.0, 0.0, 2.5};
 
-  int orbits = 100;
+  int orbits = 1;
   int steps_per_orbit = 1000;
   int steps = orbits * steps_per_orbit;
-  double period = 2 * M_PI;
+  double period = 0.3 * 2 * M_PI;
   double dt = period / steps_per_orbit;
   double t = 0;
   double scratch[20];
