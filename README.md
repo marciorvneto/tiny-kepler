@@ -105,7 +105,6 @@ make && ./out/mission_parser ./examples/missions/cr3bp-jacobi.mission jacobi.out
 
 - **Arrow Keys:** Pan the camera
 - **Mouse Wheel** or **+ / -**: Zoom in and out
-- **J:** Toggle GPU-accelerated Jacobi region visualization
 
 ## Project Structure
 
