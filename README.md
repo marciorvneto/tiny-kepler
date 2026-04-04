@@ -1,5 +1,7 @@
 # tiny-kepler
 
+![Simulation Demo](./orbit.gif)
+
 A single-header orbital mechanics and restricted 3-body problem (CR3BP) engine written in C. Includes a custom mission-description DSL parser, RK4 and Verlet integrators, and an event trigger system.
 
 ## Getting Started
