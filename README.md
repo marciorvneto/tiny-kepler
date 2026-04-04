@@ -45,17 +45,28 @@ make clean
 
 Once compiled, you can run the binaries from the `out/` directory.
 
-Run a mission file through the DSL parser:
+First, run a mission file through the DSL parser to compute the trajectory (this outputs to `./results.out` by default):
 
 ```bash
 ./out/mission_parser examples/missions/reduced-3-body.mission
 ```
 
-Run the graphical visualizer:
+Then, run the graphical visualizer to watch the simulation:
 
 ```bash
 ./out/orbit-viewer
 ```
+
+_Note: The viewer defaults to reading `./results.out`, but you can optionally pass a custom file path:_
+
+```bash
+./out/orbit-viewer path/to/your_custom_results.out
+```
+
+### Viewer Controls
+
+- **Arrow Keys:** Pan the camera
+- **Mouse Wheel** or **+ / -**: Zoom in and out
 
 ## Project Structure
 
