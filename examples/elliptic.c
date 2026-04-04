@@ -2,10 +2,6 @@
 #include "string.h"
 #include "tiny-kepler.h"
 
-typedef struct {
-  double mu;
-} GravParams;
-
 // Regular definition
 void gravity(double t, double *y, double *dydt, void *ctx) {
   // a = -mu/r³ * r

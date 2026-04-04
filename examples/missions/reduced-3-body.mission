@@ -1,7 +1,9 @@
 // Basic simulation parameters
 // TODO: add support for TBP and NBODY
-SIM_TYPE CR3BP
-SIM_TIME 3000
+SIM_TYPE   CR3BP
+SIM_TIME   1000000
+SIM_DT     50
+INTEGRATOR RK4
 
 // Entities definition
 // body id name mass_kg radius_km [orbital_radius_km]
@@ -22,6 +24,16 @@ VEL 0 CIRCULAR(0, 1)
 // General formula AT time_s <EVENT>
 // General formula WHEN <TRIGGER> [ONCE] <EVENT>
 EVENTS
-//AT   START        DRAW_HOLD LAGRANGE_POINTS(1,2)
-WHEN PERIAPSIS(1) ONCE      MANEUVER DELTA_V 1.4 PROGRADE
+AT   START        DRAW LAGRANGE_POINTS(1,2)
+//WHEN PERIAPSIS(1) ONCE MANEUVER DELTA_V 2.1 PROGRADE
 
+// Gravity assist!
+//AT 3600 MANEUVER DELTA_V 4.7 PROGRADE
+
+// Overshooting
+//AT 3380 MANEUVER DELTA_V 3.1532 PROGRADE
+
+// Earth capture
+//AT 3420 MANEUVER DELTA_V 3.14528 PROGRADE
+
+AT 3420 MANEUVER DELTA_V 3.14529 PROGRADE

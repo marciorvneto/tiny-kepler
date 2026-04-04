@@ -1,5 +1,7 @@
+vendor
 out
 
+*.out
 *.png
 *.jpg
 
