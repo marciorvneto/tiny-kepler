@@ -11,7 +11,7 @@ A single-header orbital mechanics and restricted 3-body problem (CR3BP) engine w
 - **Event System:** Dynamically trigger maneuvers, rendering changes, or simulation termination based on spatial boundaries or time steps.
 - **GPU-Accelerated Analytics:** Real-time computation of Zero-Velocity Curves (Jacobi constants) using custom GLSL fragment shaders for infinite-resolution boundary visualization at 60 FPS.
 
-![Jacobi Regions](./jacobi.gif)
+![Jacobi Regions](./jacobi.jpg)
 
 ## Getting Started
 
