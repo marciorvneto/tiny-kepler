@@ -7,7 +7,7 @@ A single-header orbital mechanics and restricted 3-body problem (CR3BP) engine w
 This project relies on Git submodules for its dependencies (`tinyla` and `raylib`). Make sure to clone the repository recursively:
 
 ```bash
-git clone --recursive <your-repo-url>
+git clone --recursive git@github.com:marciorvneto/tiny-kepler.git
 cd tiny-kepler
 ```
 
