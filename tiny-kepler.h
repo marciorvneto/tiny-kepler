@@ -149,6 +149,7 @@ typedef struct {
 typedef enum {
 	ACTION_DRAW,
 	ACTION_MANEUVER,
+	ACTION_CONTROL,
 } action_t;
 
 typedef enum {
@@ -190,6 +191,9 @@ typedef struct {
 			double delta_v;
 			direction_t direction;
 		} maneuver;
+		struct {
+			char *value;
+		} control;
 	} as;
 } Action;
 
@@ -371,6 +375,10 @@ typedef struct {
 	double T;
 	size_t primary_id;
 } CR3BPNormalization;
+
+typedef struct {
+	int early_quit;
+} CR3BPSimulationControls;
 
 // ----- General interface -----
 
@@ -994,8 +1002,8 @@ Action parse_action(MissionParser *parser){
 	}else if(strcmp(name->as.id.value, "DRAW") == 0){
 		parse_draw(parser, &action);
 	}else{
-		fprintf(stderr, "Unknown action type: %s\n", name->as.id.value);
-		exit(1);
+		action.type = ACTION_CONTROL;
+		action.as.control.value = name->as.id.value;
 	}
 	return action;
 }
@@ -1397,9 +1405,6 @@ Action *poll_events_cr3bp(
 					if(strcmp(fn->name, "PERIAPSIS") == 0){
 						// TODO: Check if body_idx is whithin bounds
 						int body_id  = fn->args[0];
-						int body_idx = mission->entity_id_to_idx[body_id];
-						Entity *body = &mission->entities[body_idx];
-
 						double bx = 0.0, by = 0.0;
 						if(body_id == norm->primary_id){
 							bx = -norm->mu;
@@ -1432,6 +1437,33 @@ Action *poll_events_cr3bp(
 						}else{
 							return NULL;
 						}
+					}else if(strcmp(fn->name, "SPACECRAFT_WITHIN_DIST") == 0){
+						// TODO: Check if body_idx is whithin bounds
+						int body_id = fn->args[0];
+						double dist = fn->args[1];
+
+						double bx = 0.0, by = 0.0, bz = 0.0;
+						if(body_id == norm->primary_id){
+							bx = -norm->mu;
+						}else{
+							bx = 1.0 -norm->mu;
+						}
+
+						double dx = state[0] - bx;
+						double dy = state[1] - by;
+						double dz = state[2] - bz;
+						double r = sqrt(SQR(dx) + SQR(dy) + SQR(dz));
+
+						int should_fire = r < dist / norm->L;
+						if(should_fire){
+							/* printf("Hit the periapsis check\n"); */
+							if(e->as.when.periodicity == EVENT_ONCE){
+								e->consumed = 1;
+							}
+							return &e->as.when.action;
+						}else{
+							return NULL;
+						}
 					}
 				}
 		  }
@@ -1452,7 +1484,9 @@ void take_action_cr3bp(
 		double state[6],
 		double old_state[6],
 		Action *action,
-		CR3BPNormalization *norm)
+		CR3BPNormalization *norm,
+		CR3BPSimulationControls *controls
+		)
 {
 	switch (action->type) {
 		case ACTION_DRAW: { break;}
@@ -1471,6 +1505,13 @@ void take_action_cr3bp(
 			state[5] = tla_vector_get_value(&v, 2);
 			break;
 		}
+		case ACTION_CONTROL: { 
+			if(strcmp(action->as.control.value, "END_SIMULATION") == 0){
+				controls->early_quit = 1;	
+				return;
+			}
+			break;
+	  }
 		default:{
 			// Unreachable
 		}
@@ -1503,6 +1544,8 @@ CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission){
 		.L          = L,
 		.primary_id = m1 > m2 ? earth->id : moon->id
 	};
+
+	CR3BPSimulationControls sim_controls = {0};
 
 	double t = 0;
 	double tmax = mission->simulation_time / T;
@@ -1554,14 +1597,14 @@ CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission){
 	// Initial events
 	action = poll_events_cr3bp(mission, state, old_state, t, &norm);
 	if(action != NULL){
-			take_action_cr3bp(mission, state, old_state, action, &norm);
+			take_action_cr3bp(mission, state, old_state, action, &norm, &sim_controls);
 	}
-	while(t < tmax){
+	while(t < tmax && !sim_controls.early_quit){
 		rk4_step(t, dt, state, cr3bp, 6, &params, scratch);
 
 		action = poll_events_cr3bp(mission, state, old_state, t + dt, &norm);
 		if(action != NULL){
-				take_action_cr3bp(mission, state, old_state, action, &norm);
+				take_action_cr3bp(mission, state, old_state, action, &norm, &sim_controls);
 		}
 
 		// Push results
