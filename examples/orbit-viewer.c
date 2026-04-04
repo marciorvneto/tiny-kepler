@@ -4,7 +4,61 @@
 #include "raylib.h"
 
 #define MULT 800
-#define SPEEDUP 8
+#define SPEEDUP 1
+
+typedef struct {
+	Shader jacobi_shader;
+} OrbitShaders;
+
+OrbitShaders load_shaders(){
+	OrbitShaders shaders;
+	shaders.jacobi_shader = LoadShader(0, "./examples/shaders/jacobi.fs");
+	return shaders;
+}
+
+void set_shader_uniforms(Camera2D *camera, CR3BPResults *results, OrbitShaders *shaders, size_t frame){
+	int screenWidth = GetScreenWidth();
+	int screenHeight = GetScreenHeight();
+
+	// Jacobi
+
+	int muLoc  = GetShaderLocation(shaders->jacobi_shader, "mu");
+	int csatLoc = GetShaderLocation(shaders->jacobi_shader, "C_sat");
+	int resLoc  = GetShaderLocation(shaders->jacobi_shader, "resolution");
+	int tgtLoc  = GetShaderLocation(shaders->jacobi_shader, "camTarget");
+	int offLoc  = GetShaderLocation(shaders->jacobi_shader, "camOffset");
+	int zoomLoc = GetShaderLocation(shaders->jacobi_shader, "camZoom");
+
+	double C = cr3bp_jacobi_constant_normalized(
+			results->mu,
+			results->x[frame],
+			results->y[frame],
+			results->z[frame],
+			results->vx[frame],
+			results->vy[frame],
+			results->vz[frame]);
+
+	// Set static uniforms (resolution and mu don't change)
+	float resolution[2] = { (float)screenWidth, (float)screenHeight };
+	SetShaderValue(shaders->jacobi_shader, resLoc, resolution, SHADER_UNIFORM_VEC2);
+
+	float mu_val = (float)results->mu;
+	SetShaderValue(shaders->jacobi_shader, muLoc, &mu_val, SHADER_UNIFORM_FLOAT);
+
+	// Update dynamic uniforms
+	float C_sat_val = (float)C;
+	SetShaderValue(shaders->jacobi_shader, csatLoc, &C_sat_val, SHADER_UNIFORM_FLOAT);
+
+	float camTgt[2] = { camera->target.x, camera->target.y };
+	SetShaderValue(shaders->jacobi_shader, tgtLoc, camTgt, SHADER_UNIFORM_VEC2);
+
+	float camOff[2] = { camera->offset.x, camera->offset.y };
+	SetShaderValue(shaders->jacobi_shader, offLoc, camOff, SHADER_UNIFORM_VEC2);
+
+	float camZoom = camera->zoom;
+	SetShaderValue(shaders->jacobi_shader, zoomLoc, &camZoom, SHADER_UNIFORM_FLOAT);
+
+}
 
 int main(int argc, char **argv)
 {
@@ -19,8 +73,9 @@ int main(int argc, char **argv)
 		Color bg_color = {18, 18, 18, 255};
 
     InitWindow(screenWidth, screenHeight, "Tiny Kepler Orbit Viewer");
-
     SetTargetFPS(60);
+
+		OrbitShaders shaders = load_shaders();
 
 		Camera2D camera = {0};
 		camera.target = (Vector2){0.5 - results.mu, 0};
@@ -43,10 +98,20 @@ int main(int argc, char **argv)
 				camera.zoom *= powf(1.1, wheel);
 			}
 
+			set_shader_uniforms(&camera, &results, &shaders, frame);
+
 			BeginDrawing();
 			ClearBackground(bg_color);
 
+			if(results.display_options.show_jacobi){
+				BeginShaderMode(shaders.jacobi_shader);
+					DrawRectangle(0, 0, screenWidth, screenHeight, BLANK);
+				EndShaderMode();
+			}
+
 			BeginMode2D(camera);
+
+
 			// Trail
 			if(frame > 0){
 				for(size_t i = 0; i < frame - 1; i++){

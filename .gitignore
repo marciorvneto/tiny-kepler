@@ -3,7 +3,6 @@ out
 
 *.out
 *.png
-*.jpg
 
 compile_commands.json
 .clangd

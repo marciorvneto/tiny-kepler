@@ -234,15 +234,20 @@ typedef enum {
 } integrator_t;
 
 typedef struct {
-	mission_t    type;
-	double       simulation_time;
-	double       dt;
-	integrator_t integrator;
-	Entity       *entities;
-	size_t       num_entities;
-	size_t       *entity_id_to_idx;
-	Event        *events;
-	size_t       num_events;
+	int show_jacobi;
+} DisplayOptions;
+
+typedef struct {
+	mission_t      type;
+	double         simulation_time;
+	double         dt;
+	integrator_t   integrator;
+	Entity         *entities;
+	size_t         num_entities;
+	size_t         *entity_id_to_idx;
+	Event          *events;
+	size_t         num_events;
+	DisplayOptions display_options;
 } MissionDescription;
 void mission_type_string(mission_t type, char *buf);
 void entity_type_string(entity_t type, char *buf);
@@ -330,7 +335,7 @@ void verlet_step(double t, double dt, double *y, accel_fn_t accel,
 //
 //========================
 
-#define SQR(x) ((x*x))
+#define SQR(x) (((x)*(x)))
 
 double circular_orbital_velocity(double mu, double r);
 
@@ -345,6 +350,15 @@ typedef struct {
 } CR3BPParams;
 
 void cr3bp(double t, double *y, double *dydt, void *cr3bp_params);
+double cr3bp_jacobi_constant_normalized(
+		double mu,
+		double x,
+		double y,
+		double z,
+		double vx,
+		double vy,
+		double vz
+		);
 
 //========================
 //
@@ -355,17 +369,18 @@ void cr3bp(double t, double *y, double *dydt, void *cr3bp_params);
 // ----- Result types -----
 
 typedef struct {
-	size_t num_results;
-	double mu;
-	double L;
-	double T;
-	double *t;
-	double *x;
-	double *y;
-	double *z;
-	double *vx;
-	double *vy;
-	double *vz;
+	size_t         num_results;
+	double         mu;
+	double         L;
+	double         T;
+	double         *t;
+	double         *x;
+	double         *y;
+	double         *z;
+	double         *vx;
+	double         *vy;
+	double         *vz;
+	DisplayOptions display_options;
 } CR3BPResults;
 
 
@@ -1158,7 +1173,7 @@ MissionDescription parse_mission(Arena *a, Token *tokens, size_t num_tokens){
 	parser.mission.entities         = (Entity*) arena_alloc(a, MAX_ENTITIES * sizeof(Entity));
 	parser.mission.events           = (Event*) arena_alloc(a, MAX_EVENTS * sizeof(Event));
 	while(parser.pointer < num_tokens){
-		Token *current = &parser.tokens[parser.pointer];
+		Token *current = peek(&parser);
 		if(current->type == TOKEN_ID){
 			if(strcmp(current->as.id.value, "SIM_TYPE") == 0){
 				parse_sim_type(&parser);
@@ -1168,6 +1183,10 @@ MissionDescription parse_mission(Arena *a, Token *tokens, size_t num_tokens){
 				continue;
 			}else if(strcmp(current->as.id.value, "SIM_DT") == 0){
 				parse_sim_dt(&parser);
+				continue;
+			}else if(strcmp(current->as.id.value, "SHOW_JACOBI") == 0){
+				parser.mission.display_options.show_jacobi = 1;
+				eat_token(&parser, TOKEN_ID);
 				continue;
 			}else if(strcmp(current->as.id.value, "INTEGRATOR") == 0){
 				parse_integrator(&parser);
@@ -1344,6 +1363,23 @@ void cr3bp(double t, double *y, double *dydt, void *cr3bp_params) {
     dydt[3] =  2.0*vy + x - (1.0-p->mu)*dx1/r1_3 - p->mu*dx2/r2_3;
     dydt[4] = -2.0*vx + y_ - (1.0-p->mu)*y_/r1_3  - p->mu*y_/r2_3;
     dydt[5] =               - (1.0-p->mu)*z/r1_3   - p->mu*z/r2_3;
+}
+
+double cr3bp_jacobi_constant_normalized(
+		double mu,
+		double x,
+		double y,
+		double z,
+		double vx,
+		double vy,
+		double vz
+		)
+{
+	double sum_sqr_v = SQR(vx) + SQR(vy) + SQR(vz);
+	double r1 = sqrt(SQR(x + mu) + SQR(y) + SQR(z));
+	double r2 = sqrt(SQR(x - (1.0 - mu)) + SQR(y) + SQR(z));
+	double C = SQR(x) + SQR(y) + 2 * (1 - mu) / r1 + 2 * mu / r2 - sum_sqr_v;
+	return C;
 }
 
 //========================
@@ -1568,6 +1604,7 @@ CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission){
 	// Prepare results
 
 	CR3BPResults results = {0};
+	results.display_options = mission->display_options;
 	results.mu = mu;
 	results.T  = T;
 	results.L  = L;
@@ -1631,6 +1668,7 @@ void dump_cr3bp_result(const char *path, CR3BPResults *results){
 	}
 
 	fprintf(f, "CR3BP\n");
+	fprintf(f, "SHOW_JACOBI %d\n", results->display_options.show_jacobi);
 	fprintf(f, "mu %lf\n", results->mu);
 	fprintf(f, "L %lf\n", results->L);
 	fprintf(f, "T %lf\n", results->T);
@@ -1667,6 +1705,7 @@ void read_cr3bp_result(Arena *a, const char *path, CR3BPResults *results){
 	}
 
 	size_t num_results = 0;
+	fscanf(f, "%*s %d", &results->display_options.show_jacobi);
 	fscanf(f, "%*s %lf", &results->mu);
 	fscanf(f, "%*s %lf", &results->L);
 	fscanf(f, "%*s %lf", &results->T);
