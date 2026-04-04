@@ -41,6 +41,30 @@ To clean the build directory:
 make clean
 ```
 
+## Mission DSL
+
+Missions are defined in a custom domain-specific language (DSL). Its syntax is shown below.
+
+```mission
+SIM_TYPE   CR3BP
+SIM_TIME   864000
+SIM_DT     50
+
+ENTITIES
+BODY 1 Earth 5.972e24 6378
+BODY 2 Moon  7.348e22 1737.4 384400
+
+INITIAL_STATE
+POS 0 6578 0 0
+VEL 0 CIRCULAR(0, 1)
+
+EVENTS
+AT   3420                             MANEUVER DELTA_V 3.14529 PROGRADE
+WHEN SPACECRAFT_WITHIN_DIST(1, 6578)  ONCE END_SIMULATION
+```
+
+At the moment only Classical Restricted 3-Body Problems (CR3BP) simulations are available.
+
 ## Running
 
 Once compiled, you can run the binaries from the `out/` directory.
