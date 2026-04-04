@@ -4,7 +4,7 @@
 #include "raylib.h"
 
 #define MULT 800
-#define SPEEDUP 32
+#define SPEEDUP 8
 
 int main(int argc, char **argv)
 {
@@ -67,15 +67,10 @@ int main(int argc, char **argv)
 			double v = sqrt(SQR(results.vx[frame]) + SQR(results.vy[frame]));
 			double t_real = results.t[frame] * results.T;
 
-			// HUD goes OUTSIDE BeginMode2D so it doesn't zoom/pan
-			sprintf(buf, "%.0f", t_real);
+			sprintf(buf, "t = %.0fs", t_real);
 			DrawText(buf, 10, 10, 24, LIGHTGRAY);
 			sprintf(buf, "V = %.2f km/s", v * V_norm);
 			DrawText(buf, 10, 40, 24, LIGHTGRAY);
-
-			// if(t_real > 1000 && t_real < 4500){
-			// 	printf("tn =%f, t=%f vx=%f vy=%f\n", results.t[frame], t_real, results.vx[frame], results.vy[frame]);
-			// }
 
 
 			EndDrawing();
@@ -83,7 +78,7 @@ int main(int argc, char **argv)
 				frame = (frame + SPEEDUP) % results.num_results;
     }
 
-    CloseWindow();        // Close window and OpenGL context
+    CloseWindow();
 		arena_destroy(&a);
     return 0;
 }
