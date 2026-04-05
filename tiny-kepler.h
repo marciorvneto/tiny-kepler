@@ -1111,11 +1111,9 @@ void evaluate_function(FunctionCall *fn, MissionDescription *mission, Entity *e)
 
 		double mu = __G * ref->as.body.mass;
 
-		double r_coords[3] = {craft->x, craft->y, craft->z};
-		tla_Vector r_craft = {.size = 3, .values=r_coords};
+		tla_Vector r_craft = tla_vec3(craft->x, craft->y, craft->z);
 		double r = tla_vector_norm(&r_craft);
 		double v = circular_orbital_velocity(mu, r);
-
 
 		craft->vx = -craft->y/r * v;
 		craft->vy = craft->x/r * v;
@@ -1531,8 +1529,7 @@ void take_action_cr3bp(
 			direction_t direction = action->as.maneuver.direction;
 			double multiplier     = direction == DIR_PROGRADE ? 1.0 : -1.0;
 			double delta_v_norm = delta_v / ( norm->L / norm->T ); // Normalized delta_v
-			double values[3] = {state[3], state[4], state[5]};
-			tla_Vector v = {.size=3, .values=values};
+			tla_Vector v = tla_vec3(state[3], state[4], state[5]);
 			double v_norm = tla_vector_norm(&v);                   // Current velocity in normalized dimensions
 			double new_v = v_norm + multiplier * delta_v_norm;
 			tla_vector_scalar_mul(&v, &v, new_v/v_norm);
