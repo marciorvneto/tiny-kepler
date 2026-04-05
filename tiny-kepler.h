@@ -339,9 +339,43 @@ void verlet_step(double t, double dt, double *y, accel_fn_t accel,
 
 double circular_orbital_velocity(double mu, double r);
 
+// ----- 2-Body problems --------
+
+typedef struct {
+  double x;
+  double y;
+  double z;
+  double vx;
+  double vy;
+  double vz;
+} StateVector;
+
+typedef struct {
+  double x;
+  double y;
+  double vx;
+  double vy;
+} StateVector2D;
+
+typedef struct {
+  double h;
+  double theta;
+  double e;
+  double ra;
+  double i;
+  double w;
+} OrbitalElements;
+
 typedef struct {
 	double mu;
 } GravParams;
+
+OrbitalElements state_to_orbital_elements(double mu, StateVector *s);
+void            geocentric_to_perifocal(StateVector *geo, OrbitalElements *elements);
+void            perifocal_to_geocentric(StateVector *peri, OrbitalElements *elements);
+double          stumpf_s(double z);
+double          stumpf_c(double z);
+void            orbit_propagate_lagrange(StateVector2D *s, double mu, double dt, int *flag);
 
 void gravity3d(double t, double *y, double *dydt, GravParams *p);
 
@@ -1321,6 +1355,245 @@ double circular_orbital_velocity(double mu, double r){
 	return sqrt(mu / r);
 }
 
+// ----- 2-Body problems --------
+
+OrbitalElements state_to_orbital_elements(double mu, StateVector *s){
+	tla_Vector I_vec = tla_vec3(1, 0, 0);
+	tla_Vector K_vec = tla_vec3(0, 0, 1);
+
+	tla_Vector r_vec = tla_vec3(s->x, s->y, s->z);
+	tla_Vector v_vec = tla_vec3(s->vx, s->vy, s->vz);
+	tla_Vector h_vec = tla_vec3(0, 0, 0);
+	tla_vector_vec(&h_vec, &r_vec, &v_vec);
+
+	double h = tla_vector_norm(&h_vec);
+	double r = tla_vector_norm(&r_vec);
+	double v = tla_vector_norm(&v_vec);
+	double vr = tla_vector_dot(&r_vec, &v_vec) / r;
+
+	// Orbital plane inclination
+	double i = acos(tla_vector_dot(&K_vec, &h_vec) / h);
+
+	// Right ascension
+	tla_Vector N_vec = tla_vec3(0, 0, 0);
+	tla_vector_vec(&N_vec, &K_vec, &h_vec);
+	tla_vector_normalize(&N_vec, &N_vec); // Normalized node line
+	double cos_ra = tla_vector_dot(&N_vec, &I_vec);
+	double ra = acos(cos_ra);
+	if(tla_vector_get_value(&N_vec, 1) < 0){
+		ra = 2 * M_PI - ra;
+	}
+
+	// Eccentricity vector
+	tla_Vector scratch = tla_vec3(0, 0, 0);
+	tla_Vector e_vec   = tla_vec3(0, 0, 0);
+	tla_vector_scalar_mul(&e_vec, &r_vec, SQR(v) - mu / r);
+	tla_vector_scalar_mul(&scratch, &v_vec, r * vr);
+	tla_vector_sub(&e_vec, &e_vec, &scratch);
+	tla_vector_scalar_mul(&e_vec, &e_vec, 1.0/mu);
+	double e = tla_vector_norm(&e_vec);
+
+	// Perigee argument
+	double cos_w = tla_vector_dot(&e_vec, &N_vec) / e;
+	double w = acos(cos_w);
+	if(tla_vector_get_value(&e_vec, 2) < 0){
+		w = 2 * M_PI - w;
+	}
+
+	// True anomaly
+	double cos_theta = tla_vector_dot(&e_vec, &r_vec) / (r * e);
+	double theta = acos(cos_theta);
+	if(vr < 0){
+		theta = 2 * M_PI - theta;
+	}
+
+	OrbitalElements elements;
+	elements.i     = i;
+	elements.ra    = ra;
+	elements.w     = w;
+	elements.h     = h;
+	elements.theta = theta;
+	elements.e     = e;
+
+	return elements;
+
+}
+
+void geocentric_to_perifocal(StateVector *geo, OrbitalElements *elements){
+	tla_Vector r = tla_vec3(geo->x, geo->y, geo->z);
+	tla_Vector v = tla_vec3(geo->vx, geo->vy, geo->vz);
+
+	tla_apply_rot_z_passive(&r, elements->ra);
+	tla_apply_rot_x_passive(&r, elements->i);
+	tla_apply_rot_z_passive(&r, elements->w);
+
+	tla_apply_rot_z_passive(&v, elements->ra);
+	tla_apply_rot_x_passive(&v, elements->i);
+	tla_apply_rot_z_passive(&v, elements->w);
+
+	geo->x  = tla_vector_get_value(&r, 0);
+	geo->y  = tla_vector_get_value(&r, 1);
+	geo->z  = tla_vector_get_value(&r, 2);
+
+	geo->vx = tla_vector_get_value(&v, 0);
+	geo->vy = tla_vector_get_value(&v, 1);
+	geo->vz = tla_vector_get_value(&v, 2);
+}
+
+void perifocal_to_geocentric(StateVector *peri, OrbitalElements *elements){
+	tla_Vector r = tla_vec3(peri->x, peri->y, peri->z);
+	tla_Vector v = tla_vec3(peri->vx, peri->vy, peri->vz);
+
+	tla_apply_rot_z_passive(&r, -elements->w);
+	tla_apply_rot_x_passive(&r, -elements->i);
+	tla_apply_rot_z_passive(&r, -elements->ra);
+
+	tla_apply_rot_z_passive(&v, -elements->w);
+	tla_apply_rot_x_passive(&v, -elements->i);
+	tla_apply_rot_z_passive(&v, -elements->ra);
+
+	peri->x  = tla_vector_get_value(&r, 0);
+	peri->y  = tla_vector_get_value(&r, 1);
+	peri->z  = tla_vector_get_value(&r, 2);
+
+	peri->vx = tla_vector_get_value(&v, 0);
+	peri->vy = tla_vector_get_value(&v, 1);
+	peri->vz = tla_vector_get_value(&v, 2);
+}
+
+
+double stumpf_s(double z){
+	if(z > 0){
+		double sqrt_z   = sqrt(z);
+		double s_sqrt_z = sin(sqrt_z);
+		return (sqrt_z - s_sqrt_z) / (z * sqrt_z);
+	}
+	if(z < 0){
+		double sqrt_mz   = sqrt(-z);
+		double sh_sqrt_z = sinh(sqrt_mz);
+		return (sh_sqrt_z - sqrt_mz) / (-z * sqrt_mz);
+	}
+	return 1.0/6.0;
+}
+
+double stumpf_c(double z){
+	if(z > 0){
+		return (1 - cos(sqrt(z))) / z;
+	}
+	if(z < 0){
+		return (cosh(sqrt(-z)) - 1.0) / (-z);
+	}
+	return 1.0/2.0;
+}
+
+static double universal_kepler_solve(double mu, double r0, double vr0, double alpha, double dt, int *flag){
+	double chi           = sqrt(mu) * fabs(alpha) * dt; // Universal anomaly
+	double tol           = 1e-8;
+	double err           = 1;
+	double der           = 0;
+	double fn            = 0;
+	double delta         = 0;
+	double sqrt_mu       = sqrt(mu);
+	size_t max_iter      = 100;
+	size_t iter          = 0;
+	int max_iter_reached = 0;
+	while(err > tol){
+		double chi2 = chi * chi;
+		double chi3 = chi * chi2;
+		double z    = alpha * chi2;
+		double sz   = stumpf_s(z);
+		double cz   = stumpf_c(z);
+		der = r0*vr0/sqrt_mu * chi * (1 - alpha * chi2 * sz) + (1 - alpha * r0) * chi2 * cz + r0;
+		fn  = r0 * vr0 / sqrt_mu * chi2 * cz + (1 - alpha * r0) * chi3 * sz + r0 * chi - sqrt_mu * dt;
+		delta  = fn / der;
+		chi   -= delta;
+		err    = fabs(delta);
+		iter  += 1;
+		if(iter >= max_iter){
+			max_iter_reached = 1;
+			break;
+		}
+	}
+
+	if(flag != NULL){
+		if(max_iter_reached){
+			*flag = 1;
+		}else{
+			*flag = 0;
+		}
+	}
+
+	return chi;
+}
+
+/**
+ * This function assumes a perifocal reference frame, hence the use of
+ * a 2-dimensional state vector.
+ */
+void orbit_propagate_lagrange(StateVector2D *s, double mu, double dt, int *flag){
+	tla_Vector r0_vec = tla_vec2(s->x, s->y);
+	tla_Vector v0_vec = tla_vec2(s->vx, s->vy);
+
+	double r0         = tla_vector_norm(&r0_vec);
+	double v0         = tla_vector_norm(&v0_vec);
+	double vr0        = tla_vector_dot(&v0_vec, &r0_vec) / r0;
+	double alpha      = 2 / r0 - SQR(v0) / mu;
+
+	double chi        = universal_kepler_solve(mu, r0, vr0, alpha, dt, flag);
+	double chi2       = chi * chi;
+	double chi3       = chi * chi2;
+	double z          = alpha * chi2;
+	double sz         = stumpf_s(z);
+	double cz         = stumpf_c(z);
+	double sqrt_mu    = sqrt(mu);
+
+	double f          = 1 - chi2 / r0 * cz;
+	double g          = dt - 1/sqrt_mu * chi3 * sz;
+
+	tla_Vector scratch = tla_vec2(0, 0);
+	tla_Vector r_vec   = tla_vec2(0, 0);
+	tla_Vector v_vec   = tla_vec2(0, 0);
+	tla_vector_scalar_mul(&r_vec, &r0_vec, f);
+	tla_vector_scalar_mul(&scratch, &v0_vec, g);
+	tla_vector_add(&r_vec, &r_vec, &scratch);
+	double r = tla_vector_norm(&r_vec);
+
+	double f_dot = sqrt_mu / (r * r0) * (alpha * chi3 * sz - chi);
+	double g_dot = 1 - chi2 / r * cz;
+
+	tla_vector_scalar_mul(&v_vec, &r0_vec, f_dot);
+	tla_vector_scalar_mul(&scratch, &v0_vec, g_dot);
+	tla_vector_add(&v_vec, &v_vec, &scratch);
+	
+	s->x  = tla_vector_get_value(&r_vec, 0);
+	s->y  = tla_vector_get_value(&r_vec, 1);
+
+	s->vx = tla_vector_get_value(&v_vec, 0);
+	s->vy = tla_vector_get_value(&v_vec, 1);
+}
+
+static inline StateVector2D state3d_to_2d(StateVector *s){
+	StateVector2D state = {
+		.x  = s->x,
+		.y  = s->y,
+		.vx = s->vx,
+		.vy = s->vy,
+	};
+	return state;
+}
+
+static inline StateVector state2d_to_3d(StateVector2D *s){
+	StateVector state = {
+		.x  = s->x,
+		.y  = s->y,
+		.z  = 0.0,
+		.vx = s->vx,
+		.vy = s->vy,
+		.vz = 0.0,
+	};
+	return state;
+}
+
 void gravity3d(double t, double *y, double *dydt, GravParams *p) {
   // a = -mu/r³ * r
 
@@ -1340,6 +1613,8 @@ void gravity3d(double t, double *y, double *dydt, GravParams *p) {
   dydt[4] = -p->mu / r3 * y_;
   dydt[5] = -p->mu / r3 * z;
 }
+
+// ----- 3-Body problems --------
 
 void cr3bp(double t, double *y, double *dydt, void *cr3bp_params) {
 		CR3BPParams *p = cr3bp_params;
