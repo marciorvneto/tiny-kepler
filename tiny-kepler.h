@@ -2009,6 +2009,172 @@ void read_cr3bp_result(Arena *a, const char *path, CR3BPResults *results){
 	fclose(f);
 }
 
+//========================
+//
+//    N-body
+//
+//========================
+
+
+typedef struct {
+	size_t num_entities;
+	size_t num_nodes;
+	double *mass;
+
+	// Initial state
+
+	double *x;
+	double *y;
+	double *z;
+	double *vx;
+	double *vy;
+	double *vz;
+	double *ax;
+	double *ay;
+	double *az;
+
+	// Maneuver and planning
+
+	double *t;
+	double *dv_x;
+	double *dv_y;
+	double *dv_z;
+
+} NBodyScenario;
+
+#define SUN_MASS 1.98847e30    // kg
+#define AU       149.5978707e6 // km
+#define TIME_U   5022642.89    // seconds
+#define VEL_U    29.78469      // km/s
+
+// Heliocentric Canonical Units
+#define SUN_MASS 1.98847e30    // kg
+#define AU       149.5978707e6 // km
+#define TIME_U   5022642.89    // seconds
+#define VEL_U    29.78469      // km/s
+
+void to_canonical_units(NBodyScenario *scenario) {
+    for(size_t i = 0; i < scenario->num_entities; i++) {
+        scenario->mass[i] /= SUN_MASS;
+        
+        scenario->x[i]  /= AU;
+        scenario->y[i]  /= AU;
+        scenario->z[i]  /= AU;
+        
+        scenario->vx[i] /= VEL_U;
+        scenario->vy[i] /= VEL_U;
+        scenario->vz[i] /= VEL_U;
+    }
+
+    for(size_t i = 0; i < scenario->num_nodes; i++) {
+        scenario->t[i]   /= TIME_U;
+        scenario->dv_x[i] /= VEL_U;
+        scenario->dv_y[i] /= VEL_U;
+        scenario->dv_z[i] /= VEL_U;
+    }
+}
+
+void from_canonical_units(NBodyScenario *scenario) {
+    for(size_t i = 0; i < scenario->num_entities; i++) {
+        scenario->mass[i] *= SUN_MASS;
+        
+        scenario->x[i]  *= AU;
+        scenario->y[i]  *= AU;
+        scenario->z[i]  *= AU;
+        
+        scenario->vx[i] *= VEL_U;
+        scenario->vy[i] *= VEL_U;
+        scenario->vz[i] *= VEL_U;
+    }
+
+    for(size_t i = 0; i < scenario->num_nodes; i++) {
+        scenario->t[i]   *= TIME_U;
+        scenario->dv_x[i] *= VEL_U;
+        scenario->dv_y[i] *= VEL_U;
+        scenario->dv_z[i] *= VEL_U;
+    }
+}
+
+void print_nbody_scenario(NBodyScenario *scenario){
+	for(size_t i = 0; i < scenario->num_entities; i++){
+		printf("=== Entity %zu ===\n", i);
+		printf("x: %lf\n", scenario->x[i]);
+		printf("y: %lf\n", scenario->y[i]);
+		printf("z: %lf\n", scenario->z[i]);
+		printf("vx: %lf\n", scenario->vx[i]);
+		printf("vy: %lf\n", scenario->vy[i]);
+		printf("vz: %lf\n", scenario->vz[i]);
+		printf("fx: %lf\n", scenario->ax[i]);
+		printf("fy: %lf\n", scenario->ay[i]);
+		printf("fz: %lf\n", scenario->az[i]);
+	}
+}
+
+void calculate_accelerations(
+		size_t num_entities, double *mass, 
+		const double *x, const double *y, const double*z, 
+		double *ax, double *ay, double *az
+		){
+	// Zero acceleration accumulators
+	for(size_t i = 0; i < num_entities; i++){
+		ax[i] = 0;
+		ay[i] = 0;
+		az[i] = 0;
+	}
+	for(size_t i = 0; i < num_entities; i++){
+		for(size_t j = i + 1; j < num_entities; j++){
+			double dx        = x[j] - x[i];
+			double dy        = y[j] - y[i];
+			double dz        = z[j] - z[i];
+			double rij2      = SQR(dx) + SQR(dy) + SQR(dz);
+			double rij       = sqrt(rij2);
+
+			double inv_rij3  = 1.0 / (rij2 * rij);
+			double aix       = mass[j] * inv_rij3 * dx;
+			double aiy       = mass[j] * inv_rij3 * dy;
+			double aiz       = mass[j] * inv_rij3 * dz;
+
+			double ajx       = mass[i] * inv_rij3 * dx;
+			double ajy       = mass[i] * inv_rij3 * dy;
+			double ajz       = mass[i] * inv_rij3 * dz;
+
+			ax[i] += aix;
+			ay[i] += aiy;
+			az[i] += aiz;
+
+			ax[j] -= ajx;
+			ay[j] -= ajy;
+			az[j] -= ajz;
+		}
+	}
+}
+
+void n_body_rk4_step(
+		NBodyScenario *scenario,
+		double dt,
+		double *t_x,  double *t_y,  double *t_z,
+		double *t_vx, double *t_vy, double *t_vz,
+		double *t_ax, double *t_ay, double *t_az
+		)
+{
+	calculate_accelerations(
+		scenario->num_entities, scenario->mass,
+		t_x,  t_y,  t_z,
+		t_ax, t_ay, t_az
+		);
+
+	for(size_t i = 0; i < scenario->num_entities; i++){
+		t_vx[i] += t_ax[i] * dt;
+		t_vy[i] += t_ay[i] * dt;
+		t_vz[i] += t_az[i] * dt;
+
+		t_x[i]  += t_vx[i] * dt;
+		t_y[i]  += t_vy[i] * dt;
+		t_z[i]  += t_vz[i] * dt;
+	}
+
+}
+
 #endif
 
 #endif // TINY_KEPLER_H
