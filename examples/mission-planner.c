@@ -1,7 +1,8 @@
-#include <stddef.h>
 #define TINY_KEPLER_IMPLEMENTATION
 #include <string.h>
+#include <stddef.h>
 #include "tiny-kepler.h"
+#include "tinyla.h"
 
 #define NUM_NODES 5
 #define NUM_ENTTS 5 // Spacecraft, Sun, Earth, Moon, Mars
@@ -9,6 +10,7 @@
 int main(int argc, char **argv) {
 
     Arena a = arena_create(1024 * 1024); // 1MB
+    tla_Arena la = tla_arena_create(1024 * 1024);
 
     NBodyScenario scenario = {0};
     scenario.num_nodes = NUM_NODES;
@@ -70,7 +72,7 @@ int main(int argc, char **argv) {
 		}
 
 		to_canonical_units(&scenario);
-		print_nbody_scenario(&scenario);
+		// print_nbody_scenario(&scenario);
 
 		// Temporaries
     double *t_x  = (double*) arena_alloc(&a, NUM_ENTTS * sizeof(double));
@@ -83,8 +85,12 @@ int main(int argc, char **argv) {
     double *t_ay = (double*) arena_alloc(&a, NUM_ENTTS * sizeof(double));
     double *t_az = (double*) arena_alloc(&a, NUM_ENTTS * sizeof(double));
 
-		// State transition matrix (STM)
-    double *G    = (double*) arena_alloc(&a, NUM_ENTTS * sizeof(double)); 
+		// State transition matrix (STM) -> 6x6
+    tla_Matrix *Phi = tla_matrix_eye(&la, 6);
+		// Gravity tensor (3x3)
+    tla_Matrix *G   = tla_matrix_eye(&la, 3);
+    tla_Matrix *tmp = tla_matrix_eye(&la, 3);
+    tla_print_matrix(Phi);
 
 		memcpy(t_x,  scenario.x, scenario.num_entities * sizeof(double));
 		memcpy(t_y,  scenario.y, scenario.num_entities * sizeof(double));
@@ -98,6 +104,7 @@ int main(int argc, char **argv) {
 		double current_t = 0;
 
 		for(size_t i = 0; i < scenario.num_nodes; i++){
+      reset_state_transfer_matrix(Phi, 6);
 			while(current_t + dt < scenario.t[i]){
 				n_body_rk4_step(&scenario, dt,
 						t_x,  t_y,  t_z,
@@ -114,12 +121,15 @@ int main(int argc, char **argv) {
 				current_t += remaining_t;
 			}
 
+      calculate_gravity_tensor(G, &scenario, t_x,  t_y,  t_z);
+
 			// Apply impulsive maneuvers
 
 			t_vx[0] += scenario.dv_x[i];
 			t_vy[0] += scenario.dv_y[i];
 			t_vz[0] += scenario.dv_z[i];
 		}
+    tla_print_matrix(G);
 
 		memcpy(scenario.x,  t_x, scenario.num_entities * sizeof(double));
 		memcpy(scenario.y,  t_y, scenario.num_entities * sizeof(double));
@@ -128,10 +138,11 @@ int main(int argc, char **argv) {
 		memcpy(scenario.vy, t_vy, scenario.num_entities * sizeof(double));
 		memcpy(scenario.vz, t_vz, scenario.num_entities * sizeof(double));
 
-		print_nbody_scenario(&scenario);
+		// print_nbody_scenario(&scenario);
 
 		// Initialize simulation state
 
     arena_destroy(&a);
+    tla_arena_destroy(&la);
     return 0;
 }
