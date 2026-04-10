@@ -1365,6 +1365,55 @@ void verlet_step(double t, double dt, double *y, accel_fn_t accel,
   }
 }
 
+//====================
+//
+//    Optimization
+//
+//====================
+
+typedef struct {
+	size_t dim_x;
+	size_t dim_c;
+
+	tla_Matrix *H;    // Hessian
+	tla_Matrix *Jc;   // Constraints jacobian
+	tla_Vector *c;    // Constraints
+	tla_Vector *grad_L; // Lagrangian gradient
+
+	tla_Matrix *KKT_matrix; // dim_x + dim_c square matrix
+	tla_Vector *KKT_rhs;    // Right hand side vector
+	tla_Vector *step;       // The resulting [dx, dlambda] step vector
+
+	// BFGS Update
+	tla_Vector *x_old;
+	tla_Vector *grad_L_old;
+
+	void *physics_ctx;
+} SQPOptimizerCtx;
+
+void optimize_sqp(evaluate_kkt_state_t eval_fn, size_t dim_x, double *x, double *lagrange, double tol, void *gen_ctx){
+	SQPOptimizerCtx *ctx = (SQPOptimizerCtx*) gen_ctx;
+
+	// Seed Hessisan
+	for(size_t i = 0; i < ctx->dim_x; i++){
+		for(size_t j = 0; j < ctx->dim_x; j++){
+			tla_matrix_set_value(ctx->H, i, j, i == j ? 1 : 0);
+		}
+	}
+
+	double error = tol + 1.0;
+	int max_iters = 100;
+	int iter = 0;
+
+	while(error > tol && iter < max_iters){
+
+		eval_fn(x, ctx);
+
+		iter++;
+	}
+
+}
+
 //========================
 //
 //    Orbital mechanics
@@ -2224,6 +2273,10 @@ typedef struct {
 	double *t_ax;
 	double *t_ay;    
 	double *t_az;
+
+	double *y;
+	double *scratch;
+  size_t dim_y;
 } NBodyIntegrationContext;
 
 void n_body_ode_fn(double t, double *y, double *dydt, void *gen_ctx){
@@ -2326,56 +2379,155 @@ void reset_stm(tla_Matrix *Phi, size_t size){
   }
 }
 
-void n_body_lagrange_grad(double t, double *y, double *dydt, void *gen_ctx){}
+void n_body_run_mission(NBodyIntegrationContext *ctx){
 
-//====================
-//
-//    Optimization
-//
-//====================
+    NBodyScenario *scenario = ctx->scenario;
+    tla_Matrix *Phi         = ctx->Phi;
+    tla_Matrix *Phi_dot     = ctx->Phi_dot;
+    double  *t_x            = ctx->t_x;
+    double  *t_y            = ctx->t_y;
+    double  *t_z            = ctx->t_z;
+    double  *t_vx           = ctx->t_vx;
+    double  *t_vy           = ctx->t_vy;
+    double  *t_vz           = ctx->t_vz;
+    double *y               = ctx->y;
+    double *scratch         = ctx->scratch;
+    size_t dim_y            = ctx->dim_y;
 
-typedef struct {
-	size_t dim_x;
-	size_t dim_c;
+		memcpy(t_x,  scenario->x, scenario->num_entities * sizeof(double));
+		memcpy(t_y,  scenario->y, scenario->num_entities * sizeof(double));
+		memcpy(t_z,  scenario->z, scenario->num_entities * sizeof(double));
+		memcpy(t_vx, scenario->vx,scenario->num_entities * sizeof(double));
+		memcpy(t_vy, scenario->vy,scenario->num_entities * sizeof(double));
+		memcpy(t_vz, scenario->vz,scenario->num_entities * sizeof(double));
 
-	tla_Matrix *H;    // Hessian
-	tla_Matrix *Jc;   // Constraints jacobian
-	tla_Matrix *c;    // Constraints
-	tla_Matrix *grad; // Lagrangian gradient
+		// Integrate leg by leg
+		double dt        = 0.01;
+		double current_t = 0;
+		reset_stm(ctx->Phi, 6);
+		n_body_integration_state_to_vec(
+				y,
+				Phi,
+				scenario->num_entities,
+				t_x,
+				t_y,
+				t_z,
+				t_vx,
+				t_vy,
+				t_vz);
 
-	tla_Matrix *KKT_matrix; // dim_x + dim_c square matrix
-	tla_Matrix *KKT_rhs;    // Right hand side vector
-	tla_Matrix *step;       // The resulting [dx, dlambda] step vector
+		for(size_t i = 0; i < scenario->num_nodes; i++){
+			while(current_t + dt < scenario->t[i]){
+				rk4_step(current_t, dt, y, n_body_ode_fn, dim_y, &ctx, scratch);
+				current_t += dt;
+			}
+			double remaining_t = scenario->t[i] - current_t;
+			if(remaining_t > 0){
+				rk4_step(current_t, remaining_t, y, n_body_ode_fn, dim_y, &ctx, scratch);
+				current_t += remaining_t;
+			}
 
-	// BFGS Update
-	tla_Matrix *x_old;
-	tla_Matrix *grad_L_old;
+			// Apply impulsive maneuvers
 
-	void *physics_ctx;
-} SQPOptimizerCtx;
+			y[3] += scenario->dv_x[i];
+			y[4] += scenario->dv_y[i];
+			y[5] += scenario->dv_z[i];
 
-void optimize_sqp(evaluate_kkt_state_t eval_fn, size_t dim_x, double *x, double *lagrange, double tol, void *gen_ctx){
-	SQPOptimizerCtx *ctx = (SQPOptimizerCtx*) gen_ctx;
+			n_body_vec_to_integration_state(
+					y,
+					Phi,
+					scenario->num_entities,
+					t_x,
+					t_y,
+					t_z,
+					t_vx,
+					t_vy,
+					t_vz);
 
-	// Seed Hessisan
-	for(size_t i = 0; i < ctx->dim_x; i++){
-		for(size_t j = 0; j < ctx->dim_x; j++){
-			tla_matrix_set_value(ctx->H, i, j, i == j ? 1 : 0);
+			reset_stm(Phi, 6);
+
+			n_body_integration_state_to_vec(
+					y,
+					Phi,
+					scenario->num_entities,
+					t_x,
+					t_y,
+					t_z,
+					t_vx,
+					t_vy,
+					t_vz);
+
+
 		}
-	}
 
-	double error = tol + 1.0;
-	int max_iters = 100;
-	int iter = 0;
+		n_body_vec_to_integration_state(
+				y,
+				Phi,
+				scenario->num_entities,
+				t_x,
+				t_y,
+				t_z,
+				t_vx,
+				t_vy,
+				t_vz);
 
-	while(error > tol && iter < max_iters){
+		memcpy(scenario->x,  t_x, scenario->num_entities * sizeof(double));
+		memcpy(scenario->y,  t_y, scenario->num_entities * sizeof(double));
+		memcpy(scenario->z,  t_z, scenario->num_entities * sizeof(double));
+		memcpy(scenario->vx, t_vx, scenario->num_entities * sizeof(double));
+		memcpy(scenario->vy, t_vy, scenario->num_entities * sizeof(double));
+		memcpy(scenario->vz, t_vz, scenario->num_entities * sizeof(double));
+}
 
-		eval_fn(x, ctx);
+/**
+ * This function does the following things:
+ *
+ * 1) Runs a simulation with its given parameters
+ * 2) Populates the constraints
+ * 3) Populates the Lagrangian Jacobian
+ * 4) Populates the Lagrangian right hand side
+ *
+ * Hessian evaluation is left to the caller
+ */
+void n_body_evaluate_kkt_state(double *x, void *gen_ctx){
+  SQPOptimizerCtx *ctx              = (SQPOptimizerCtx*) gen_ctx;
+  NBodyIntegrationContext *phys_ctx = (NBodyIntegrationContext*) ctx->physics_ctx;
 
-		iter++;
-	}
+  // Create scenario from the optimizer parameters
+  for(size_t i = 0; i < phys_ctx->scenario->num_nodes; i++) {
+    phys_ctx->scenario->dv_x[i] = x[i * 4 + 0];
+    phys_ctx->scenario->dv_y[i] = x[i * 4 + 1];
+    phys_ctx->scenario->dv_z[i] = x[i * 4 + 2];
+    phys_ctx->scenario->t[i]    = x[i * 4 + 3];
+  }
+
+  n_body_run_mission(phys_ctx);
+
+  // Zero out all matrices
+
+  size_t kkt_size = ctx->dim_x + ctx->dim_c;
+  memset(ctx->KKT_matrix->values, 0, kkt_size * kkt_size * sizeof(double));
+  memset(ctx->KKT_rhs->values,    0, kkt_size * sizeof(double));
+
+  // Analytical gradient of the objective function:
+  // f(x) = sum_i(norm(dvi))
+
+  for(size_t i = 0; i < phys_ctx->scenario->num_nodes; i++) {
+    double dv_x = x[i * 4 + 0];
+    double dv_y = x[i * 4 + 1];
+    double dv_z = x[i * 4 + 2];
+    double norm = sqrt(SQR(dv_x) + SQR(dv_y) + SQR(dv_z));
+
+    // tla_matrix_set_value(ctx->grad, i * 4 + 0, 0, dv_x / norm);
+    // tla_matrix_set_value(ctx->grad, i * 4 + 1, 0, dv_y / norm);
+    // tla_matrix_set_value(ctx->grad, i * 4 + 2, 0, dv_z / norm);
+
+  }
+
+  
 
 }
+
 
 #endif
 
