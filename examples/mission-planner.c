@@ -86,11 +86,16 @@ int main(int argc, char **argv) {
     double *t_az = (double*) arena_alloc(&a, NUM_ENTTS * sizeof(double));
 
 		// State transition matrix (STM) -> 6x6
-    tla_Matrix *Phi = tla_matrix_eye(&la, 6);
+    tla_Matrix *Phi     = tla_matrix_eye(&la, 6);
+    tla_Matrix *Phi_dot = tla_matrix_eye(&la, 6);
+
 		// Gravity tensor (3x3)
-    tla_Matrix *G   = tla_matrix_eye(&la, 3);
-    tla_Matrix *tmp = tla_matrix_eye(&la, 3);
-    tla_print_matrix(Phi);
+    tla_Matrix *G = tla_matrix_eye(&la, 3);
+		size_t dim_y  = 6 * scenario.num_entities + 36; // Entities + STM
+																													//
+		// Integrator
+    double *scratch = (double*) arena_alloc(&a, 5 * dim_y * sizeof(double));
+    double *y       = (double*) arena_alloc(&a, dim_y * sizeof(double));
 
 		memcpy(t_x,  scenario.x, scenario.num_entities * sizeof(double));
 		memcpy(t_y,  scenario.y, scenario.num_entities * sizeof(double));
@@ -99,36 +104,92 @@ int main(int argc, char **argv) {
 		memcpy(t_vy, scenario.vy,scenario.num_entities * sizeof(double));
 		memcpy(t_vz, scenario.vz,scenario.num_entities * sizeof(double));
 
+		NBodyIntegrationContext ctx = {
+			.scenario=&scenario, 
+			.G=G,
+			.Phi=Phi,
+			.Phi_dot=Phi_dot,
+			.t_x=t_x,
+			.t_y=t_y,
+			.t_z=t_z,
+			.t_vx=t_vx,
+			.t_vy=t_vy,    
+			.t_vz=t_vz,
+			.t_ax=t_ax,
+			.t_ay=t_ay,    
+			.t_az=t_az,
+		};
+
 		// Integrate leg by leg
 		double dt        = 0.01;
 		double current_t = 0;
+		reset_stm(Phi, 6);
+		n_body_integration_state_to_vec(
+				y,
+				Phi,
+				scenario.num_entities,
+				t_x,
+				t_y,
+				t_z,
+				t_vx,
+				t_vy,
+				t_vz);
 
 		for(size_t i = 0; i < scenario.num_nodes; i++){
-      reset_state_transfer_matrix(Phi, 6);
 			while(current_t + dt < scenario.t[i]){
-				n_body_rk4_step(&scenario, dt,
-						t_x,  t_y,  t_z,
-						t_vx, t_vy, t_vz,
-						t_ax, t_ay, t_az);
+				rk4_step(current_t, dt, y, n_body_ode_fn, dim_y, &ctx, scratch);
 				current_t += dt;
 			}
 			double remaining_t = scenario.t[i] - current_t;
 			if(remaining_t > 0){
-				n_body_rk4_step(&scenario, remaining_t,
-						t_x,  t_y,  t_z,
-						t_vx, t_vy, t_vz,
-						t_ax, t_ay, t_az);
+				rk4_step(current_t, remaining_t, y, n_body_ode_fn, dim_y, &ctx, scratch);
 				current_t += remaining_t;
 			}
 
-      calculate_gravity_tensor(G, &scenario, t_x,  t_y,  t_z);
-
 			// Apply impulsive maneuvers
 
-			t_vx[0] += scenario.dv_x[i];
-			t_vy[0] += scenario.dv_y[i];
-			t_vz[0] += scenario.dv_z[i];
+			y[3] += scenario.dv_x[i];
+			y[4] += scenario.dv_y[i];
+			y[5] += scenario.dv_z[i];
+
+			n_body_vec_to_integration_state(
+					y,
+					Phi,
+					scenario.num_entities,
+					t_x,
+					t_y,
+					t_z,
+					t_vx,
+					t_vy,
+					t_vz);
+
+			reset_stm(Phi, 6);
+
+			n_body_integration_state_to_vec(
+					y,
+					Phi,
+					scenario.num_entities,
+					t_x,
+					t_y,
+					t_z,
+					t_vx,
+					t_vy,
+					t_vz);
+
+
 		}
+
+		n_body_vec_to_integration_state(
+				y,
+				Phi,
+				scenario.num_entities,
+				t_x,
+				t_y,
+				t_z,
+				t_vx,
+				t_vy,
+				t_vz);
+
     tla_print_matrix(G);
 
 		memcpy(scenario.x,  t_x, scenario.num_entities * sizeof(double));

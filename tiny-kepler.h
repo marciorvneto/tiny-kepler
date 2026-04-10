@@ -325,6 +325,15 @@ typedef void accel_fn_t(double *pos, double *accel, void *ctx);
 void verlet_step(double t, double dt, double *y, accel_fn_t accel,
                  size_t n_dimensions, void *ctx, double *scratch);
 
+//====================
+//
+//    Optimization
+//
+//====================
+
+typedef void evaluate_kkt_state_t(double *x, void *ctx);
+void optimize_sqp(evaluate_kkt_state_t fun, size_t dim_x, double *x, double *lagrange, double tol, void *ctx);
+
 //========================
 //
 //    Orbital mechanics
@@ -2110,35 +2119,6 @@ void calculate_accelerations(size_t num_entities, double *mass, const double *x,
   }
 }
 
-void n_body_rk4_step(NBodyScenario *scenario, double dt, double *t_x,
-                     double *t_y, double *t_z, double *t_vx, double *t_vy,
-                     double *t_vz, double *t_ax, double *t_ay, double *t_az) {
-  calculate_accelerations(scenario->num_entities, scenario->mass, t_x, t_y, t_z,
-                          t_ax, t_ay, t_az);
-
-  for (size_t i = 0; i < scenario->num_entities; i++) {
-    t_vx[i] += t_ax[i] * dt;
-    t_vy[i] += t_ay[i] * dt;
-    t_vz[i] += t_az[i] * dt;
-
-    t_x[i] += t_vx[i] * dt;
-    t_y[i] += t_vy[i] * dt;
-    t_z[i] += t_vz[i] * dt;
-  }
-}
-
-void reset_state_transfer_matrix(tla_Matrix *Phi, size_t size){
-  for(size_t i = 0; i < size; i++){
-    for(size_t j = 0; j < size; j++){
-      if(i == j){
-        tla_matrix_set_value(Phi, i, j, 1);
-      }else{
-        tla_matrix_set_value(Phi, i, j, 0);
-      }
-    }
-  }
-}
-
 void calculate_gravity_tensor(tla_Matrix *G, NBodyScenario *scenario,  
                               double *t_x, double *t_y, double *t_z)
 {
@@ -2188,6 +2168,213 @@ void calculate_gravity_tensor(tla_Matrix *G, NBodyScenario *scenario,
     tla_matrix_set_value(G, 2, 0, gxz);
     tla_matrix_set_value(G, 2, 1, gyz);
     tla_matrix_set_value(G, 2, 2, gzz);
+}
+
+void n_body_integration_state_to_vec(
+		double  *y,   tla_Matrix *Phi, size_t num_entities,
+		double *t_x,  double *t_y,     double *t_z,
+		double *t_vx, double *t_vy,    double *t_vz)
+{
+	for(size_t i = 0; i < num_entities; i++){
+		y[6 * i + 0] = t_x[i];
+		y[6 * i + 1] = t_y[i];
+		y[6 * i + 2] = t_z[i];
+		y[6 * i + 3] = t_vx[i];
+		y[6 * i + 4] = t_vy[i];
+		y[6 * i + 5] = t_vz[i];
+	}
+	for(size_t i = 0; i < 36; i++){
+		size_t row = i / 6;
+		size_t col = i % 6;
+		y[6 * num_entities + i]   = tla_matrix_get_value(Phi, row, col);
+	}
+}
+
+void n_body_vec_to_integration_state(
+		double  *y,   tla_Matrix *Phi, size_t num_entities,
+		double *t_x,  double *t_y,     double *t_z,
+		double *t_vx, double *t_vy,    double *t_vz)
+{
+	for(size_t i = 0; i < num_entities; i++){
+		t_x[i]  = y[6 * i + 0];
+		t_y[i]  = y[6 * i + 1];
+		t_z[i]  = y[6 * i + 2];
+		t_vx[i] = y[6 * i + 3];
+		t_vy[i] = y[6 * i + 4];
+		t_vz[i] = y[6 * i + 5];
+	}
+	for(size_t i = 0; i < 36; i++){
+		size_t row = i / 6;
+		size_t col = i % 6;
+		tla_matrix_set_value(Phi, row, col, y[6 * num_entities + i]);
+	}
+}
+
+typedef struct {
+	NBodyScenario *scenario; 
+	tla_Matrix *G;
+	tla_Matrix *Phi;
+	tla_Matrix *Phi_dot;
+	double *t_x;
+	double *t_y;
+	double *t_z;
+	double *t_vx;
+	double *t_vy;    
+	double *t_vz;
+	double *t_ax;
+	double *t_ay;    
+	double *t_az;
+} NBodyIntegrationContext;
+
+void n_body_ode_fn(double t, double *y, double *dydt, void *gen_ctx){
+
+	// Mapping physics to the ODE stepper common signature
+
+	NBodyIntegrationContext *ctx = (NBodyIntegrationContext*) gen_ctx;
+	NBodyScenario *scenario      = ctx->scenario;
+	tla_Matrix *G                = ctx->G;
+	tla_Matrix *Phi              = ctx->Phi;
+	tla_Matrix *Phi_dot          = ctx->Phi_dot;
+	double *t_x                  = ctx->t_x;
+	double *t_y                  = ctx->t_y;
+	double *t_z                  = ctx->t_z;
+	double *t_vx                 = ctx->t_vx;
+	double *t_vy                 = ctx->t_vy;
+	double *t_vz                 = ctx->t_vz;
+	double *t_ax                 = ctx->t_ax;
+	double *t_ay                 = ctx->t_ay;
+	double *t_az                 = ctx->t_az;
+
+	n_body_vec_to_integration_state(
+			y,
+			Phi,
+			scenario->num_entities,
+			t_x,
+			t_y,
+			t_z,
+			t_vx,
+			t_vy,
+			t_vz
+	);
+
+	// STM structure:
+	//
+	// |v| = |0 I| * |r|
+	// |a|   |G 0|   |v|
+	//      \----/
+	//        A
+	//
+	// Where G is the gravity tensor. All blocks are 3x3.
+	// The STM ODE is:
+	//
+	// Phi_dot = A * Phi
+	//
+	// |Phi_dot11 Phi_dot12| = |0 I| * |Phi11 Phi12|
+	// |Phi_dot21 Phi_dot22|   |G 0|   |Phi21 Phi22|
+	//
+	// |Phi_dot11 Phi_dot12| = |Phi21       Phi22    |
+	// |Phi_dot21 Phi_dot22|   |G * Phi11   G * Phi12|
+
+	calculate_accelerations(
+			scenario->num_entities, scenario->mass,
+			t_x,                    t_y, t_z,
+			t_ax,                   t_ay, t_az);
+
+	calculate_gravity_tensor(G, scenario, t_x,  t_y,  t_z);
+
+	// STM derivative	
+	// --- Top half: Phi_dot11 and Phi_dot12
+	for(size_t i = 0; i < 3; i++){
+		for(size_t j = 0; j < 6; j++){ // Handle both blocks at once
+			tla_matrix_set_value(Phi_dot, i, j, tla_matrix_get_value(Phi, i + 3, j));
+		}
+	}
+
+	// --- Bottom half: Phi_dot21 and Phi_dot22
+	// Phi_dot_bottom = G * Phi_top
+	for (size_t i = 0; i < 3; i++) {
+		for (size_t j = 0; j < 6; j++) {
+			double acum = 0.0;
+			for (size_t k = 0; k < 3; k++) {
+				acum += tla_matrix_get_value(G, i, k) * tla_matrix_get_value(Phi, k, j);
+			}
+			tla_matrix_set_value(Phi_dot, i + 3, j, acum);
+		}
+	}
+
+	n_body_integration_state_to_vec(
+			dydt,
+			Phi_dot,
+			scenario->num_entities,
+			t_vx,
+			t_vy,
+			t_vz,
+			t_ax,
+			t_ay,
+			t_az);
+}
+
+void reset_stm(tla_Matrix *Phi, size_t size){
+  for(size_t i = 0; i < size; i++){
+    for(size_t j = 0; j < size; j++){
+      if(i == j){
+        tla_matrix_set_value(Phi, i, j, 1);
+      }else{
+        tla_matrix_set_value(Phi, i, j, 0);
+      }
+    }
+  }
+}
+
+void n_body_lagrange_grad(double t, double *y, double *dydt, void *gen_ctx){}
+
+//====================
+//
+//    Optimization
+//
+//====================
+
+typedef struct {
+	size_t dim_x;
+	size_t dim_c;
+
+	tla_Matrix *H;    // Hessian
+	tla_Matrix *Jc;   // Constraints jacobian
+	tla_Matrix *c;    // Constraints
+	tla_Matrix *grad; // Lagrangian gradient
+
+	tla_Matrix *KKT_matrix; // dim_x + dim_c square matrix
+	tla_Matrix *KKT_rhs;    // Right hand side vector
+	tla_Matrix *step;       // The resulting [dx, dlambda] step vector
+
+	// BFGS Update
+	tla_Matrix *x_old;
+	tla_Matrix *grad_L_old;
+
+	void *physics_ctx;
+} SQPOptimizerCtx;
+
+void optimize_sqp(evaluate_kkt_state_t eval_fn, size_t dim_x, double *x, double *lagrange, double tol, void *gen_ctx){
+	SQPOptimizerCtx *ctx = (SQPOptimizerCtx*) gen_ctx;
+
+	// Seed Hessisan
+	for(size_t i = 0; i < ctx->dim_x; i++){
+		for(size_t j = 0; j < ctx->dim_x; j++){
+			tla_matrix_set_value(ctx->H, i, j, i == j ? 1 : 0);
+		}
+	}
+
+	double error = tol + 1.0;
+	int max_iters = 100;
+	int iter = 0;
+
+	while(error > tol && iter < max_iters){
+
+		eval_fn(x, ctx);
+
+		iter++;
+	}
+
 }
 
 #endif
