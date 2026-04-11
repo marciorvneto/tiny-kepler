@@ -1,54 +1,75 @@
 # tiny-kepler
 
-![Simulation Demo](./orbit.gif)
+![N-Body Mission](./nbody-mission.gif)
 
-A single-header orbital mechanics and restricted 3-body problem (CR3BP) engine written in C. Includes a custom mission-description DSL parser, RK4 and Verlet integrators, and an event trigger system with GPU-accelerated Zero-Velocity Curve (Jacobi region) visualization.
+A high-performance, single-header orbital mechanics and trajectory optimization engine written in C.
+
+`tiny-kepler` features a general N-body physics engine, restricted 3-body problem (CR3BP) solvers, and a custom **Sequential Quadratic Programming (SQP) optimal control solver** built from scratch to calculate interplanetary transfers. It includes a custom mission-description DSL parser, high-precision RK4 integrators, and GPU-accelerated Zero-Velocity Curve (Jacobi region) visualization.
+
+![Simulation Demo](./orbit.gif)
 
 ## Features
 
-- **Custom Domain-Specific Language (DSL):** Define complex astrodynamics missions, target bodies, and event triggers using a custom-built lexer and parser.
-- **High-Precision Integrators:** Built-in 4th-order Runge-Kutta (RK4) and Verlet integrators for stable, long-term orbital propagation.
-- **Event System:** Dynamically trigger maneuvers, rendering changes, or simulation termination based on spatial boundaries or time steps.
+- **Optimal Control Engine:** Includes a custom SQP solver with Powell-damped BFGS Hessian updates, backtracking line searches, and dynamic penalties to autonomously calculate optimal deep-space impulsive maneuvers (e.g., Earth-to-Mars transfers).
+- **High-Precision Physics:** Built-in 4th-order Runge-Kutta (RK4) and Verlet integrators for stable, continuous-time long-term orbital propagation across N-body and CR3BP systems.
+- **Custom Mission DSL:** Define complex astrodynamics missions, target bodies, and event triggers using a custom-built lexer and parser.
+- **Event System:** Dynamically trigger maneuvers, render changes, or terminate simulations based on spatial boundaries or time steps.
 - **GPU-Accelerated Analytics:** Real-time computation of Zero-Velocity Curves (Jacobi constants) using custom GLSL fragment shaders for infinite-resolution boundary visualization at 60 FPS.
 
 ![Jacobi Regions](./jacobi.jpg)
 
 ## Getting Started
 
-This project relies on Git submodules for its dependencies (`tinyla` and `raylib`). Make sure to clone the repository recursively:
+This project relies on Git submodules for its math and visualization dependencies (`tinyla` and `raylib`). Make sure to clone the repository recursively:
 
 ```bash
 git clone --recursive git@github.com:marciorvneto/tiny-kepler.git
 cd tiny-kepler
 ```
 
-If you already cloned it without the submodules, you can fetch them by running:
+If you already cloned it without the submodules, fetch them by running:
 
 ```bash
 git submodule update --init --recursive
 ```
 
-## Building
+## Building & Running
 
-The project uses a standard Makefile. Build artifacts are placed in the `./out` directory.
+The project uses a standard `Makefile`. Build artifacts are placed in the `./out` directory. Note: Compiling the graphical viewers will build `raylib` from source on the first run.
 
-To build the CLI examples:
+### 1. The N-Body Mission Planner (Optimal Control)
 
-```bash
-make
-```
-
-To build the graphical orbit viewer (note: this will compile `raylib` from source the first time you run it, which may take a minute):
+To run the Sequential Quadratic Programming solver and calculate an interplanetary transfer, then visualize it:
 
 ```bash
-make viewer
+make out/mission-planner && make out/n-body-visualizer
+./out/mission-planner
+./out/n-body-visualizer n-body-results.out
 ```
 
-To clean the build directory:
+### 2. The CR3BP Mission Parser
+
+Missions can be defined in a custom domain-specific language (see below). To parse a `.mission` file and view the resulting trajectory:
 
 ```bash
-make clean
+make out/mission_parser && make out/orbit-viewer
+./out/mission_parser examples/missions/cr3bp-jacobi.mission jacobi.out
+./out/orbit-viewer jacobi.out
 ```
+
+**Pro-tip:** You can chain the build, parse, and view commands for a seamless workflow:
+
+```bash
+make && ./out/mission_parser ./examples/missions/cr3bp-jacobi.mission jacobi.out && make viewer && ./out/orbit-viewer jacobi.out
+```
+
+### Visualizer Controls
+
+- **Right Mouse Button:** Pan the camera
+- **Mouse Wheel:** Zoom in and out
+- **TAB:** Cycle camera focus between planets/spacecraft
+- **SPACE:** Pause/Resume simulation
+- **Left/Right Arrows:** Decrease/Increase playback speed
 
 ## Mission DSL
 
@@ -75,42 +96,11 @@ AT   3420                                MANEUVER DELTA_V 3.09729 PROGRADE
 WHEN SPACECRAFT_WITHIN_DIST(1, 6478)     ONCE    END_SIMULATION
 ```
 
-_At the moment, only Circular Restricted 3-Body Problem (CR3BP) simulations are available._
-
-## Running
-
-Once compiled, you can run the binaries from the `out/` directory.
-
-You can parse a mission file and compute the trajectory, optionally specifying an output `.out` file:
-
-```bash
-./out/mission_parser examples/missions/cr3bp-jacobi.mission jacobi.out
-```
-
-Then, run the graphical visualizer to watch the simulation using your generated results:
-
-```bash
-./out/orbit-viewer jacobi.out
-```
-
-_(Note: If no arguments are provided, the parser outputs to `./results.out` and the viewer attempts to read from `./results.out`)_
-
-**Pro-tip:** You can chain the build, parse, and view commands for a seamless workflow:
-
-```bash
-make && ./out/mission_parser ./examples/missions/cr3bp-jacobi.mission jacobi.out && make viewer && ./out/orbit-viewer jacobi.out
-```
-
-### Viewer Controls
-
-- **Arrow Keys:** Pan the camera
-- **Mouse Wheel** or **+ / -**: Zoom in and out
-
 ## Project Structure
 
-- `tiny-kepler.h`: The core single-header physics engine, integrator, and parser.
-- `examples/`: Example applications, including the Raylib visualizer and basic orbital mechanics tests.
+- `tiny-kepler.h`: The core single-header physics engine, optimal control solver, and DSL parser.
+- `examples/`: Example applications, including the Raylib visualizers (`n-body-visualizer.c`, `orbit-viewer.c`) and SQP testbenches (`mission-planner.c`).
 - `examples/missions/`: Sample `.mission` files written in the custom domain-specific language.
 - `examples/shaders/`: GLSL Fragment shaders for GPU-accelerated math rendering.
-- `test-scripts/`: Python scripts for external plotting and testing.
-- `vendor/`: Third-party dependencies (`tinyla` and `raylib`).
+- `test-scripts/`: Python scripts for external plotting and numerical verification.
+- `vendor/`: Third-party dependencies (`tinyla` for linear algebra and `raylib` for rendering).
