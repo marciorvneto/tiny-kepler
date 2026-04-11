@@ -1379,9 +1379,11 @@ typedef struct {
 	tla_Matrix *Jc;   // Constraints jacobian
 	tla_Vector *c;    // Constraints
 	tla_Vector *grad_L; // Lagrangian gradient
+	tla_Vector *grad_f; // Objective function gradient
 
 	tla_Matrix *KKT_matrix; // dim_x + dim_c square matrix
-	tla_Vector *KKT_rhs;    // Right hand side vector
+	tla_Vector *KKT_rhs;    // Right hand side vector [-grad_L, -c(x)]
+	tla_Matrix *KKT_augmented;  // [KKT_matrix | KKT_rhs ]
 	tla_Vector *step;       // The resulting [dx, dlambda] step vector
 
 	// BFGS Update
@@ -1389,29 +1391,232 @@ typedef struct {
 	tla_Vector *grad_L_old;
 
 	void *physics_ctx;
+	tla_Arena *arena;
 } SQPOptimizerCtx;
 
 void optimize_sqp(evaluate_kkt_state_t eval_fn, size_t dim_x, double *x, double *lagrange, double tol, void *gen_ctx){
+	// Here we solve the SQP with hessian updates following
+	// the BFGS algorithm. This avoids having to compute expensive
+	// constraint hessians, which would require the multiple simulations
+	// to be run.
+	//
+	// KKT matrix structure:
+	// | H     Jc^T | | dx         | = | -grad_f |
+	// | Jc    0    | | new_lambda |   | -c(x)   |
+
 	SQPOptimizerCtx *ctx = (SQPOptimizerCtx*) gen_ctx;
 
-	// Seed Hessisan
+	// Seed Hessian
 	for(size_t i = 0; i < ctx->dim_x; i++){
 		for(size_t j = 0; j < ctx->dim_x; j++){
-			tla_matrix_set_value(ctx->H, i, j, i == j ? 1 : 0);
+			tla_matrix_set_value(ctx->H, i, j, i == j ? 1.0 : 0.0);
 		}
 	}
 
 	double error = tol + 1.0;
-	int max_iters = 100;
+	int max_iters = 200;
 	int iter = 0;
+	
+	// Evaluate the initial state so KKT_matrix has data for Iteration 0
+	eval_fn(x, ctx);
 
 	while(error > tol && iter < max_iters){
+		size_t scratch = tla_arena_save(ctx->arena);
 
-		eval_fn(x, ctx);
+		// Build the augmented matrix
+		for(size_t i = 0; i < ctx->KKT_matrix->rows; i++){
+			for(size_t j = 0; j < ctx->KKT_matrix->cols; j++){
+				double value = tla_matrix_get_value(ctx->KKT_matrix, i, j);
+				tla_matrix_set_value(ctx->KKT_augmented, i, j, value);
+			}
+			double rhs_value = tla_vector_get_value(ctx->KKT_rhs, i);
+			tla_matrix_set_value(ctx->KKT_augmented, i, ctx->KKT_matrix->cols, rhs_value);
+		}
+
+		tla_gauss_solve(ctx->step, ctx->KKT_augmented);
+
+		// Extract dx and lambda+ from the solution vector
+		tla_Vector dx     = tla_vector_slice(ctx->step, 0, ctx->dim_x);
+		tla_Vector lambda = tla_vector_slice(ctx->step, ctx->dim_x, ctx->dim_x + ctx->dim_c);
+
+		double max_lambda = 0.0;
+		for(size_t i = 0; i < ctx->dim_c; i++) {
+			double lambda_val = fabs(tla_vector_get_value(&lambda, i));
+			if (lambda_val > max_lambda) max_lambda = lambda_val;
+		}
+
+		// grad_L_old = grad_f_old + Jc_old^T * lambda
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			double grad_val = tla_vector_get_value(ctx->grad_f, i);
+			for(size_t c = 0; c < ctx->dim_c; c++){
+				grad_val += tla_matrix_get_value(ctx->Jc, c, i) * tla_vector_get_value(&lambda, c);
+			}
+			tla_vector_set_value(ctx->grad_L_old, i, grad_val);
+		}
+
+		// ===== Backtracking + Line search  =====
+		// (this is important depending on the obj function)
+		// ========================================
+		
+		// Save old state
+		double x_old_arr[ctx->dim_x];
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			x_old_arr[i] = x[i];
+		}
+
+		// Calculate current merit
+		size_t num_nodes = ctx->dim_x / 4;
+		double current_obj = 0.0;
+		for(size_t n = 0; n < num_nodes; n++){
+			current_obj += SQR(x_old_arr[4 * n + 0]) + SQR(x_old_arr[4 * n + 1]) + SQR(x_old_arr[4 * n + 2]);
+		}
+		
+		double max_c = 0.0;
+		for(size_t i = 0; i < ctx->dim_c; i++) {
+			double c_val = fabs(tla_vector_get_value(ctx->c, i));
+			if (c_val > max_c) max_c = c_val;
+		}
+		
+		// Calculate current merit
+		double penalty_weight = max_lambda + 10; 
+		double current_merit = current_obj + penalty_weight * max_c;
+
+		int step_accepted = 0;
+		double alpha = 1.0;
+		
+		for(int ls_iter = 0; ls_iter < 10; ls_iter++) {
+
+			// Take the clamped step
+			for(size_t i = 0; i < ctx->dim_x; i++){
+				x[i] = x_old_arr[i] + alpha * tla_vector_get_value(&dx, i);
+			}
+
+			// Run the physics engine
+			eval_fn(x, ctx);
+
+			// Calculate new merit
+			double new_obj = 0.0;
+			for(size_t n = 0; n < num_nodes; n++){
+				new_obj += SQR(x[4 * n + 0]) + SQR(x[4 * n + 1]) + SQR(x[4 * n + 2]);
+			}
+
+			double new_max_c = 0.0;
+			for(size_t i = 0; i < ctx->dim_c; i++) {
+				double c_val = fabs(tla_vector_get_value(ctx->c, i));
+				if (c_val > new_max_c) new_max_c = c_val;
+			}
+
+			double new_merit = new_obj + penalty_weight * new_max_c;
+
+			if (new_merit < current_merit) {
+				step_accepted = 1;
+				break; // Success! Break the line search FOR loop.
+			} else {
+				alpha *= 0.5; // Step was too violent. Backtrack.
+			}
+		}
+
+		// ======= If line search failed, we try to recover =====
+		if (!step_accepted) {
+			if (max_c > 1e-2) {
+				printf("Iter %d | Line search stalled. Optimizer is trapped in a local minimum!\n", iter);
+			} else {
+				printf("Iter %d | Integrator noise floor reached. Convergence achieved!\n", iter);
+			}
+
+			// Revert parameters back to the last known good state
+			for(size_t i = 0; i < ctx->dim_x; i++){
+				x[i] = x_old_arr[i];
+			}
+
+			// Run physics one last time to sync the constraints and context to the good state
+			eval_fn(x, ctx); 
+
+			break;
+		}
+
+
+		// ======= Update gradients =====
+		// grad_L_new = grad_f_new + Jc_new^T * lambda (Using the SAME lambda!)
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			double grad_val = tla_vector_get_value(ctx->grad_f, i);
+			for(size_t c = 0; c < ctx->dim_c; c++){
+				grad_val += tla_matrix_get_value(ctx->Jc, c, i) * tla_vector_get_value(&lambda, c);
+			}
+			tla_vector_set_value(ctx->grad_L, i, grad_val);
+		}
+
+		tla_Vector *y = tla_vector_of_value(ctx->arena, ctx->dim_x, 0.0);
+		tla_Vector *s = tla_vector_of_value(ctx->arena, ctx->dim_x, 0.0);
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			tla_vector_set_value(s, i, alpha * tla_vector_get_value(&dx, i)); 
+			
+			double y_val = tla_vector_get_value(ctx->grad_L, i) - tla_vector_get_value(ctx->grad_L_old, i);
+			tla_vector_set_value(y, i, y_val);
+		}
+
+		// Powell's damping
+		tla_Vector *Hs = tla_vector_of_value(ctx->arena, ctx->dim_x, 0.0);
+		tla_matrix_vector_mul(Hs, ctx->H, s); 
+
+		double s_dot_y = 0.0;
+		double s_dot_Hs = 0.0;
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			s_dot_y  += tla_vector_get_value(s, i) * tla_vector_get_value(y, i);
+			s_dot_Hs += tla_vector_get_value(s, i) * tla_vector_get_value(Hs, i);
+		}
+
+		double theta = 1.0;
+		if (s_dot_y < 0.2 * s_dot_Hs) {
+			if (fabs(s_dot_Hs - s_dot_y) > 1e-14) { 
+				theta = (0.8 * s_dot_Hs) / (s_dot_Hs - s_dot_y);
+			}
+		}
+
+		tla_Vector *r = tla_vector_of_value(ctx->arena, ctx->dim_x, 0.0);
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			double r_val = theta * tla_vector_get_value(y, i) + (1.0 - theta) * tla_vector_get_value(Hs, i);
+			tla_vector_set_value(r, i, r_val);
+		}
+
+		// Update the estimate for H
+		double s_dot_r = 0.0;
+		for(size_t i = 0; i < ctx->dim_x; i++) {
+			s_dot_r += tla_vector_get_value(s, i) * tla_vector_get_value(r, i);
+		}
+
+		if (fabs(s_dot_Hs) > 1e-14 && fabs(s_dot_r) > 1e-14) {
+			for(size_t i = 0; i < ctx->dim_x; i++) {
+				for(size_t j = 0; j < ctx->dim_x; j++) {
+					double old_h = tla_matrix_get_value(ctx->H, i, j);
+					double term1 = (tla_vector_get_value(Hs, i) * tla_vector_get_value(Hs, j)) / s_dot_Hs;
+					double term2 = (tla_vector_get_value(r, i) * tla_vector_get_value(r, j)) / s_dot_r;
+					tla_matrix_set_value(ctx->H, i, j, old_h - term1 + term2);
+				}
+			}
+		}
+
+		// ======= Convergence check =====
+		double max_c_viol = 0.0;
+		for(size_t i = 0; i < ctx->dim_c; i++) {
+			double c_val = fabs(tla_vector_get_value(ctx->c, i));
+			if (c_val > max_c_viol) max_c_viol = c_val;
+		}
+
+		double max_grad_err = 0.0;
+		for(size_t i = 0; i < ctx->dim_x; i++){
+			double g_val = fabs(tla_vector_get_value(ctx->grad_L, i));
+			if (g_val > max_grad_err) max_grad_err = g_val;
+		}
+
+		error = (max_c_viol > max_grad_err) ? max_c_viol : max_grad_err;
+
+		printf("Iter %d | Error: %f | Max Constraint: %f | Alpha: %f\n", iter, error, max_c_viol, alpha);
 
 		iter++;
-	}
 
+		tla_arena_restore(ctx->arena, scratch);
+	}
 }
 
 //========================
@@ -2261,9 +2466,14 @@ void n_body_vec_to_integration_state(
 
 typedef struct {
 	NBodyScenario *scenario; 
+	size_t num_nodes;
 	tla_Matrix *G;
 	tla_Matrix *Phi;
 	tla_Matrix *Phi_dot;
+	tla_Matrix *Phi_temp;
+	tla_Matrix *Phi_acumm;
+	tla_Matrix **leg_Phis;
+
 	double *t_x;
 	double *t_y;
 	double *t_z;
@@ -2384,6 +2594,7 @@ void n_body_run_mission(NBodyIntegrationContext *ctx){
     NBodyScenario *scenario = ctx->scenario;
     tla_Matrix *Phi         = ctx->Phi;
     tla_Matrix *Phi_dot     = ctx->Phi_dot;
+    tla_Matrix **leg_Phis   = ctx->leg_Phis;
     double  *t_x            = ctx->t_x;
     double  *t_y            = ctx->t_y;
     double  *t_z            = ctx->t_z;
@@ -2402,7 +2613,7 @@ void n_body_run_mission(NBodyIntegrationContext *ctx){
 		memcpy(t_vz, scenario->vz,scenario->num_entities * sizeof(double));
 
 		// Integrate leg by leg
-		double dt        = 0.01;
+		double dt        = 0.0001;
 		double current_t = 0;
 		reset_stm(ctx->Phi, 6);
 		n_body_integration_state_to_vec(
@@ -2418,12 +2629,12 @@ void n_body_run_mission(NBodyIntegrationContext *ctx){
 
 		for(size_t i = 0; i < scenario->num_nodes; i++){
 			while(current_t + dt < scenario->t[i]){
-				rk4_step(current_t, dt, y, n_body_ode_fn, dim_y, &ctx, scratch);
+				rk4_step(current_t, dt, y, n_body_ode_fn, dim_y, ctx, scratch);
 				current_t += dt;
 			}
 			double remaining_t = scenario->t[i] - current_t;
 			if(remaining_t > 0){
-				rk4_step(current_t, remaining_t, y, n_body_ode_fn, dim_y, &ctx, scratch);
+				rk4_step(current_t, remaining_t, y, n_body_ode_fn, dim_y, ctx, scratch);
 				current_t += remaining_t;
 			}
 
@@ -2443,6 +2654,9 @@ void n_body_run_mission(NBodyIntegrationContext *ctx){
 					t_vx,
 					t_vy,
 					t_vz);
+
+			tla_Matrix *Phi_ref = leg_Phis[i];
+			tla_matrix_copy_into(Phi_ref, Phi);
 
 			reset_stm(Phi, 6);
 
@@ -2471,12 +2685,6 @@ void n_body_run_mission(NBodyIntegrationContext *ctx){
 				t_vy,
 				t_vz);
 
-		memcpy(scenario->x,  t_x, scenario->num_entities * sizeof(double));
-		memcpy(scenario->y,  t_y, scenario->num_entities * sizeof(double));
-		memcpy(scenario->z,  t_z, scenario->num_entities * sizeof(double));
-		memcpy(scenario->vx, t_vx, scenario->num_entities * sizeof(double));
-		memcpy(scenario->vy, t_vy, scenario->num_entities * sizeof(double));
-		memcpy(scenario->vz, t_vz, scenario->num_entities * sizeof(double));
 }
 
 /**
@@ -2484,8 +2692,8 @@ void n_body_run_mission(NBodyIntegrationContext *ctx){
  *
  * 1) Runs a simulation with its given parameters
  * 2) Populates the constraints
- * 3) Populates the Lagrangian Jacobian
- * 4) Populates the Lagrangian right hand side
+ * 3) Populates the constraints Jacobian
+ * 4) Populates the KKT right hand side and Lagrangian gradient
  *
  * Hessian evaluation is left to the caller
  */
@@ -2502,32 +2710,134 @@ void n_body_evaluate_kkt_state(double *x, void *gen_ctx){
   }
 
   n_body_run_mission(phys_ctx);
+	// From this point on, the t_i and t_vi values have all been populated
 
   // Zero out all matrices
-
   size_t kkt_size = ctx->dim_x + ctx->dim_c;
   memset(ctx->KKT_matrix->values, 0, kkt_size * kkt_size * sizeof(double));
   memset(ctx->KKT_rhs->values,    0, kkt_size * sizeof(double));
+  memset(ctx->c->values,    0, ctx->dim_c * sizeof(double));
 
-  // Analytical gradient of the objective function:
-  // f(x) = sum_i(norm(dvi))
+	// Write H into the top-left corner
+	for(size_t i = 0; i < ctx->dim_x; i++) {
+		for(size_t j = 0; j < ctx->dim_x; j++) {
+			double h_val = tla_matrix_get_value(ctx->H, i, j);
+			tla_matrix_set_value(ctx->KKT_matrix, i, j, h_val);
+		}
+	}
 
-  for(size_t i = 0; i < phys_ctx->scenario->num_nodes; i++) {
-    double dv_x = x[i * 4 + 0];
-    double dv_y = x[i * 4 + 1];
-    double dv_z = x[i * 4 + 2];
-    double norm = sqrt(SQR(dv_x) + SQR(dv_y) + SQR(dv_z));
+	// Constraints evaluation
+	size_t target_idx = 4; // Make this dynamic later
+	tla_vector_set_value(ctx->c, 0, phys_ctx->t_x[0] - phys_ctx->t_x[target_idx]);
+	tla_vector_set_value(ctx->c, 1, phys_ctx->t_y[0] - phys_ctx->t_y[target_idx]);
+	tla_vector_set_value(ctx->c, 2, phys_ctx->t_z[0] - phys_ctx->t_z[target_idx]);
 
-    // tla_matrix_set_value(ctx->grad, i * 4 + 0, 0, dv_x / norm);
-    // tla_matrix_set_value(ctx->grad, i * 4 + 1, 0, dv_y / norm);
-    // tla_matrix_set_value(ctx->grad, i * 4 + 2, 0, dv_z / norm);
+	// Constraints Jacobian
+	// Accumulate STMs -> Back to front: Phi(T,ti-1) = Phi(T,ti) * Phi(ti, ti-1)
+	for(size_t i = 0; i < 6; i++){
+		for(size_t j = 0; j < 6; j++){
+			tla_matrix_set_value(phys_ctx->Phi_acumm, i, j, i == j ? 1 : 0);
+		}
+	}
+	for(int n = phys_ctx->num_nodes - 1; n >= 0; n--){
+		// Phi_acumm contains the STM from this node (ti+) to the end
+		
+		// DVi part
+		for(size_t i = 0; i < 3; i++){
+			for(size_t j = 0; j < 3; j++){
+				double Phi12_val = tla_matrix_get_value(phys_ctx->Phi_acumm, i, 3 + j);
+				tla_matrix_set_value(ctx->Jc, i, 4 * n + j, Phi12_val);
+			}
+		}
+		// ti part
+		double dvx = phys_ctx->scenario->dv_x[n];
+		double dvy = phys_ctx->scenario->dv_y[n];
+		double dvz = phys_ctx->scenario->dv_z[n];
+		for(size_t i = 0; i < 3; i++){
+			double row_value = 0;
+			row_value -= dvx * tla_matrix_get_value(phys_ctx->Phi_acumm, i, 0);
+			row_value -= dvy * tla_matrix_get_value(phys_ctx->Phi_acumm, i, 1);
+			row_value -= dvz * tla_matrix_get_value(phys_ctx->Phi_acumm, i, 2);
+			tla_matrix_set_value(ctx->Jc, i, 4 * n + 3, row_value);
+		}
+		
+		if(n == phys_ctx->num_nodes - 1){
+			// Target velocity correction
+			// TODO: dynamic target
+			size_t target_idx = 4;
+			double vx_rel = phys_ctx->t_vx[0] - phys_ctx->t_vx[target_idx];
+			double vy_rel = phys_ctx->t_vy[0] - phys_ctx->t_vy[target_idx];
+			double vz_rel = phys_ctx->t_vz[0] - phys_ctx->t_vz[target_idx];
+			tla_matrix_set_value(ctx->Jc, 0, 4 * n + 3, vx_rel);
+			tla_matrix_set_value(ctx->Jc, 1, 4 * n + 3, vy_rel);
+			tla_matrix_set_value(ctx->Jc, 2, 4 * n + 3, vz_rel);
+		}
 
-  }
+		if(n > 0){
+			tla_matrix_matrix_mul(phys_ctx->Phi_temp, phys_ctx->Phi_acumm, phys_ctx->leg_Phis[n]);
+			tla_matrix_copy_into(phys_ctx->Phi_acumm, phys_ctx->Phi_temp);
+		}
 
-  
+	}
+
+	// Write the Jacobian back to the KKT matrix
+	for(size_t i = 0; i < ctx->dim_c; i++){
+		for(size_t j = 0; j < ctx->dim_x; j++){
+			double jac =tla_matrix_get_value(ctx->Jc, i, j);
+
+			// Bottom-left part
+			tla_matrix_set_value(ctx->KKT_matrix, i + ctx->dim_x, j, jac);
+
+			// Top-right transpose
+			tla_matrix_set_value(ctx->KKT_matrix, j, ctx->dim_x + i, jac);
+		}
+	}
+
+
+	// Lagrangian, fobj grads and KKT_rhs
+	for(size_t n = 0; n < phys_ctx->scenario->num_nodes; n++){
+		double dvx = x[4 * n + 0];
+		double dvy = x[4 * n + 1];
+		double dvz = x[4 * n + 2];
+
+		/* // Objective = sum(norm(Dvi)) */
+		double norm_sq = SQR(dvx) + SQR(dvy) + SQR(dvz);
+		double norm_inv = (norm_sq > 1e-18) ? (1.0 / sqrt(norm_sq)) : 0.0;
+
+		tla_vector_set_value(ctx->grad_L, 4 * n + 0, dvx * norm_inv);
+		tla_vector_set_value(ctx->grad_L, 4 * n + 1, dvy * norm_inv);
+		tla_vector_set_value(ctx->grad_L, 4 * n + 2, dvz * norm_inv);
+
+		/* // Objective = sum(Dvi^2) */
+		/* tla_vector_set_value(ctx->grad_f, 4 * n + 0, 2.0 * dvx); */
+		/* tla_vector_set_value(ctx->grad_f, 4 * n + 1, 2.0 * dvy); */
+		/* tla_vector_set_value(ctx->grad_f, 4 * n + 2, 2.0 * dvz); */
+		// ti
+		tla_vector_set_value(ctx->grad_f, 4 * n + 3, 0);
+	}
+
+	// grad_L = [grad_f; c(x)]
+	for(size_t i = 0; i < ctx->dim_x; i++){
+		double v = tla_vector_get_value(ctx->grad_f, i);
+		tla_vector_set_value(ctx->grad_L, i, v);
+	}
+  for(size_t i = 0; i < ctx->dim_c; i++) {
+		double c = tla_vector_get_value(ctx->c, i);
+		tla_vector_set_value(ctx->grad_L, ctx->dim_x + i, c);
+	}
+
+	// KKT RHS
+	for(size_t i = 0; i < ctx->dim_x; i++) {
+		double f_val = tla_vector_get_value(ctx->grad_f, i);
+		tla_vector_set_value(ctx->KKT_rhs, i, -f_val);
+	}
+
+	for(size_t i = 0; i < ctx->dim_c; i++) {
+		double c_val = tla_vector_get_value(ctx->c, i);
+		tla_vector_set_value(ctx->KKT_rhs, ctx->dim_x + i, -c_val);
+	}
 
 }
-
 
 #endif
 

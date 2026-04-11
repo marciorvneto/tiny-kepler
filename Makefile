@@ -18,6 +18,9 @@ $(RAYLIB_LIB):
 $(OUT_DIR)/orbit-viewer: examples/orbit-viewer.c ./tiny-kepler.h $(RAYLIB_LIB) | $(OUT_DIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -I$(RAYLIB_DIR) -o $@ $< $(RAYLIB_LIB) $(LDFLAGS) -lpthread -ldl -lrt -lX11
 
+$(OUT_DIR)/n-body-visualizer: examples/n-body-visualizer.c ./tiny-kepler.h $(RAYLIB_LIB) | $(OUT_DIR)
+	$(CC) $(CFLAGS) $(CPPFLAGS) -I$(RAYLIB_DIR) -o $@ $< $(RAYLIB_LIB) $(LDFLAGS) -lpthread -ldl -lrt -lX11
+
 $(OUT_DIR)/%: examples/%.c ./tiny-kepler.h | $(OUT_DIR)
 	$(CC) $(CFLAGS) $(CPPFLAGS) -o $@ $< $(LDFLAGS)
 
