@@ -52,15 +52,15 @@ make out/mission-planner && make out/n-body-visualizer
 Missions can be defined in a custom domain-specific language (see below). To parse a `.mission` file and view the resulting trajectory:
 
 ```bash
-make out/mission_parser && make out/orbit-viewer
-./out/mission_parser examples/missions/cr3bp-jacobi.mission jacobi.out
+make out/mission-parser && make out/orbit-viewer
+./out/mission-parser examples/missions/cr3bp-jacobi.mission jacobi.out
 ./out/orbit-viewer jacobi.out
 ```
 
 **Pro-tip:** You can chain the build, parse, and view commands for a seamless workflow:
 
 ```bash
-make && ./out/mission_parser ./examples/missions/cr3bp-jacobi.mission jacobi.out && make viewer && ./out/orbit-viewer jacobi.out
+make && ./out/mission-parser ./examples/missions/cr3bp-jacobi.mission jacobi.out && make viewer && ./out/orbit-viewer jacobi.out
 ```
 
 ### Visualizer Controls

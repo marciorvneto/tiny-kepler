@@ -5,7 +5,7 @@
 #include "tiny-kepler.h"
 #include "tinyla.h"
 
-#define NUM_NODES 100
+#define NUM_NODES 20
 #define NUM_ENTTS 5 // Spacecraft, Sun, Earth, Moon, Mars
 void n_body_dump_to_file(NBodyIntegrationContext *ctx, const char *path) {
     FILE *f = fopen(path, "wb");
@@ -233,11 +233,14 @@ int main(int argc, char **argv) {
 		double lagrange[3]      = {0};
 		double tol              = 1e-4;
 
+		double tmax_guess = 4.5;
     for(size_t i = 0; i < NUM_NODES; i++){
       x[4 * i + 0] = 0.0;
       x[4 * i + 1] = 0.0;
       x[4 * i + 2] = 0.0;
-      x[4 * i + 3] = 4.0 / NUM_NODES * (i + 1);
+      // x[4 * i + 3] = 4.5 / NUM_NODES * (i + 1);
+			// Idea: use a Chebyshev grid
+      x[4 * i + 3] = tmax_guess / 2 * (1 - cos((i+1) * M_PI / (NUM_NODES - 1)));
     }
 		x[0] = 0.00;
 		x[1] = 0.25;

@@ -56,6 +56,7 @@ typedef enum {
   TOKEN_LPAREN,
   TOKEN_RPAREN,
   TOKEN_COMMA,
+  TOKEN_DBLQUOTE,
   TOKEN_END,
 } token_t;
 
@@ -96,7 +97,10 @@ void tokenize_mission(Arena *a, Lexer *lex);
 //
 //=========================
 
-typedef enum { MISSION_CR3BP } mission_t;
+typedef enum { 
+	MISSION_TBP,
+	MISSION_CR3BP,
+} mission_t;
 
 typedef enum {
   ENTITY_SPACECRAFT,
@@ -229,8 +233,20 @@ typedef enum {
   INTEGRATOR_RK4,
 } integrator_t;
 
+#define MAX_ALTITUDES 32
+
+typedef struct {
+	int entity_id;
+	int ref_id;
+} AltitudeSpec;
+
 typedef struct {
   int show_jacobi;
+	int speedup;
+
+	size_t       num_altitudes;
+	AltitudeSpec altitude_specs[MAX_ALTITUDES];
+
 } DisplayOptions;
 
 typedef struct {
@@ -269,23 +285,23 @@ typedef struct {
   MissionDescription mission;
 } MissionParser;
 
-Token *peek(MissionParser *parser);
-Token *lookahead(MissionParser *parser);
-Token *eat_token(MissionParser *parser, token_t expected);
-int eat_int(MissionParser *parser);
+Token  *peek(MissionParser *parser);
+Token  *lookahead(MissionParser *parser);
+Token  *eat_token(MissionParser *parser, token_t expected);
+int    eat_int(MissionParser *parser);
 double eat_double(MissionParser *parser);
-void parse_sim_type(MissionParser *parser);
-void parse_sim_time(MissionParser *parser);
-void parse_sim_dt(MissionParser *parser);
-void parse_integrator(MissionParser *parser);
-void parse_entities(MissionParser *parser);
-void set_coordinates(double x, double y, double z, double *px, double *py,
-                     double *pz);
+void   parse_sim_type(MissionParser *parser);
+void   parse_sim_time(MissionParser *parser);
+void   parse_sim_dt(MissionParser *parser);
+void   parse_integrator(MissionParser *parser);
+void   parse_display(MissionParser *parser);
+void   parse_entities(MissionParser *parser);
+void   set_coordinates(double x, double y, double z, double *px, double *py, double *pz);
 
 FunctionCall parse_function_call(MissionParser *parser);
-void parse_initial_state(MissionParser *parser);
-void parse_maneuver(MissionParser *parser, Action *action);
-void parse_draw(MissionParser *parser, Action *action);
+void         parse_initial_state(MissionParser *parser);
+void         parse_maneuver(MissionParser *parser, Action *action);
+void         parse_draw(MissionParser *parser, Action *action);
 
 Action parse_action(MissionParser *parser);
 
@@ -387,7 +403,7 @@ void gravity3d(double t, double *y, double *dydt, GravParams *p);
 
 typedef struct {
   double mu;
-} CR3BPParams;
+} SimpleSimulationParams;
 
 void cr3bp(double t, double *y, double *dydt, void *cr3bp_params);
 double cr3bp_jacobi_constant_normalized(double mu, double x, double y, double z,
@@ -399,50 +415,57 @@ double cr3bp_jacobi_constant_normalized(double mu, double x, double y, double z,
 //
 //========================
 
-// ----- Result types -----
-
-typedef struct {
-  size_t num_results;
-  double mu;
-  double L;
-  double T;
-  double *t;
-  double *x;
-  double *y;
-  double *z;
-  double *vx;
-  double *vy;
-  double *vz;
-  DisplayOptions display_options;
-} CR3BPResults;
-
 typedef struct {
   double mu;
   double L;
   double T;
   size_t primary_id;
-} CR3BPNormalization;
+} SimulationNormalization;
 
 typedef struct {
   int early_quit;
-} CR3BPSimulationControls;
+} SimulationControls;
+
+
+// ----- Result types -----
+
+typedef struct {
+	mission_t      mission_type;
+  size_t         num_results;
+  double         mu;
+  double         L;
+  double         T;
+  double         *t;
+  double         *x;
+  double         *y;
+  double         *z;
+  double         *vx;
+  double         *vy;
+  double         *vz;
+  DisplayOptions display_options;
+} SimpleSimulationResults;
 
 // ----- General interface -----
 
 typedef struct {
   mission_t type;
-  union {
-    CR3BPResults cr3bp;
-  } as;
+	SimpleSimulationResults results;
 } SimResults;
 
 SimResults run_mission(Arena *a, MissionDescription *mission);
+void       read_simple_simulation_results(Arena *a, const char *path, SimpleSimulationResults *results);
+
+// ----- 2-body problem -----
+
+SimpleSimulationResults   run_tbp(Arena *a, MissionDescription *mission);
+void         dump_tbp_result(const char *path, SimpleSimulationResults *results);
+void         read_tbp_result(Arena *a, const char *path, SimpleSimulationResults *results);
 
 // ----- Classical restricted 3-body problem -----
 
-CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission);
-void dump_cr3bp_result(const char *path, CR3BPResults *results);
-void read_cr3bp_result(Arena *a, const char *path, CR3BPResults *results);
+SimpleSimulationResults run_cr3bp(Arena *a, MissionDescription *mission);
+void         dump_cr3bp_result(const char *path, SimpleSimulationResults *results);
+void         read_cr3bp_result(Arena *a, const char *path, SimpleSimulationResults *results);
 
 #ifdef TINY_KEPLER_IMPLEMENTATION
 #ifndef TINY_LA_IMPLEMENTATION
@@ -507,6 +530,10 @@ void token_to_str(Token *tok, char *str) {
   }
   case TOKEN_COMMA: {
     sprintf(str, "TOKEN_COMMA: ,");
+    break;
+  }
+  case TOKEN_DBLQUOTE: {
+    sprintf(str, "TOKEN_DBLQUOTE: \"");
     break;
   }
   case TOKEN_END: {
@@ -643,6 +670,13 @@ void tokenize_mission(Arena *a, Lexer *lex) {
       lex->pointer++;
       break;
     }
+    case '"': {
+      Token tok;
+      tok.type = TOKEN_DBLQUOTE;
+      lex->tokens[lex->num_tokens++] = tok;
+      lex->pointer++;
+      break;
+    }
     case '\n': {
       lex->line++;
       lex->pointer++;
@@ -680,6 +714,10 @@ void mission_type_string(mission_t type, char *buf) {
   switch (type) {
   case MISSION_CR3BP: {
     sprintf(buf, "%s", "MISSION_CR3BP");
+    break;
+  }
+  case MISSION_TBP: {
+    sprintf(buf, "%s", "MISSION_TBP");
     break;
   }
   default: {
@@ -879,11 +917,30 @@ double eat_double(MissionParser *parser) {
   return tok->as.dbl.value;
 }
 
+int is_section_name(const char *name){
+	if(strcmp(name, "DISPLAY") == 0){
+		return 1;
+	}
+	if(strcmp(name, "ENTITIES") == 0){
+		return 1;
+	}
+	if(strcmp(name, "INITIAL_STATE") == 0){
+		return 1;
+	}
+	if(strcmp(name, "EVENTS") == 0){
+		return 1;
+	}
+	return 0;
+}
+
 void parse_sim_type(MissionParser *parser) {
   eat_token(parser, TOKEN_ID);
   Token *current = &parser->tokens[parser->pointer];
   if (strcmp(current->as.id.value, "CR3BP") == 0) {
     parser->mission.type = MISSION_CR3BP;
+    eat_token(parser, TOKEN_ID);
+  } else if (strcmp(current->as.id.value, "TBP") == 0){
+    parser->mission.type = MISSION_TBP;
     eat_token(parser, TOKEN_ID);
   } else {
     fprintf(stderr, "Simulation type not supported: %s\n",
@@ -927,6 +984,35 @@ void parse_integrator(MissionParser *parser) {
     fprintf(stderr, "Invalid integrator %s\n", integrator_type);
     exit(1);
   }
+}
+
+void parse_display(MissionParser *parser) {
+  eat_token(parser, TOKEN_ID); // ENTITIES
+  Token *current = peek(parser);
+	DisplayOptions *options = &parser->mission.display_options;
+
+  while (current->type == TOKEN_ID && 
+			(!is_section_name(current->as.id.value)))
+	{
+		if(strcmp(current->as.id.value, "ALTITUDE") == 0){
+			eat_token(parser, TOKEN_ID);
+			int entity_id = eat_int(parser);
+			int ref_id    = eat_int(parser);
+			options->altitude_specs[options->num_altitudes++] = (AltitudeSpec){
+				.ref_id    = ref_id,
+				.entity_id = entity_id
+			};
+		}else if(strcmp(current->as.id.value, "SPEEDUP") == 0){
+			eat_token(parser, TOKEN_ID);
+			int speedup = eat_int(parser);
+			options->speedup = speedup;
+		}else if(strcmp(current->as.id.value, "ZERO_VELOCITY_SURFACE") == 0){
+			eat_token(parser, TOKEN_ID);
+			options->show_jacobi = 1;
+		}
+
+		current = peek(parser);
+	}
 }
 
 void parse_entities(MissionParser *parser) {
@@ -1161,7 +1247,7 @@ void evaluate_function(FunctionCall *fn, MissionDescription *mission,
     int craft_id = fn->args[0];
     int ref_id = fn->args[1];
     Entity *craft = &mission->entities[mission->entity_id_to_idx[craft_id]];
-    Entity *ref = &mission->entities[mission->entity_id_to_idx[ref_id]];
+    Entity *ref   = &mission->entities[mission->entity_id_to_idx[ref_id]];
 
     double mu = __G * ref->as.body.mass;
 
@@ -1236,13 +1322,12 @@ MissionDescription parse_mission(Arena *a, Token *tokens, size_t num_tokens) {
       } else if (strcmp(current->as.id.value, "SIM_DT") == 0) {
         parse_sim_dt(&parser);
         continue;
-      } else if (strcmp(current->as.id.value, "SHOW_JACOBI") == 0) {
-        parser.mission.display_options.show_jacobi = 1;
-        eat_token(&parser, TOKEN_ID);
-        continue;
       } else if (strcmp(current->as.id.value, "INTEGRATOR") == 0) {
         parse_integrator(&parser);
         continue;
+      } else if (strcmp(current->as.id.value, "DISPLAY") == 0) {
+        parse_display(&parser);
+				continue;
       } else if (strcmp(current->as.id.value, "ENTITIES") == 0) {
         parse_entities(&parser);
         continue;
@@ -1888,19 +1973,40 @@ void gravity3d(double t, double *y, double *dydt, GravParams *p) {
   dydt[5] = -p->mu / r3 * z;
 }
 
-// ----- 3-Body problems --------
+// ----- 2-Body problems --------
 
-void cr3bp(double t, double *y, double *dydt, void *cr3bp_params) {
-  CR3BPParams *p = cr3bp_params;
-  double x = y[0];
+void tbp(double t, double *y, double *dydt, void *tbp_params) {
+  SimpleSimulationParams *p = tbp_params;
+  double x  = y[0];
   double y_ = y[1];
-  double z = y[2];
+  double z  = y[2];
   double vx = y[3];
   double vy = y[4];
   double vz = y[5];
 
-  double dx1 = x + p->mu;
-  double dx2 = x - 1.0 + p->mu;
+  double r = pow(x * x + y_ * y_ + z * z, 1.5);
+
+  dydt[0] = vx;
+  dydt[1] = vy;
+  dydt[2] = vz;
+  dydt[3] = - x  / r;
+  dydt[4] = - y_ / r;
+  dydt[5] = - z  / r;
+}
+
+// ----- 3-Body problems --------
+
+void cr3bp(double t, double *y, double *dydt, void *cr3bp_params) {
+  SimpleSimulationParams *p = cr3bp_params;
+  double x  = y[0];
+  double y_ = y[1];
+  double z  = y[2];
+  double vx = y[3];
+  double vy = y[4];
+  double vz = y[5];
+
+  double dx1  = x + p->mu;
+  double dx2  = x - 1.0 + p->mu;
   double r1_3 = pow(dx1 * dx1 + y_ * y_ + z * z, 1.5);
   double r2_3 = pow(dx2 * dx2 + y_ * y_ + z * z, 1.5);
 
@@ -1930,8 +2036,12 @@ double cr3bp_jacobi_constant_normalized(double mu, double x, double y, double z,
 SimResults run_mission(Arena *a, MissionDescription *mission) {
   switch (mission->type) {
   case MISSION_CR3BP: {
-    CR3BPResults results = run_cr3bp(a, mission);
-    return (SimResults){.type = MISSION_CR3BP, .as = {.cr3bp = results}};
+    SimpleSimulationResults results = run_cr3bp(a, mission);
+    return (SimResults){.type = MISSION_CR3BP, .results=results};
+  }
+  case MISSION_TBP: {
+    SimpleSimulationResults results = run_tbp(a, mission);
+    return (SimResults){.type = MISSION_TBP, .results=results};
   }
   default: {
     char buf[128];
@@ -1942,9 +2052,9 @@ SimResults run_mission(Arena *a, MissionDescription *mission) {
   }
 }
 
-Action *poll_events_cr3bp(MissionDescription *mission, double state[6],
+Action *poll_events(MissionDescription *mission, double state[6],
                           double old_state[6], double t,
-                          CR3BPNormalization *norm) {
+                          SimulationNormalization *norm) {
   for (size_t i = 0; i < mission->num_events; i++) {
     Event *e = &mission->events[i];
     if (e->consumed)
@@ -2003,6 +2113,41 @@ Action *poll_events_cr3bp(MissionDescription *mission, double state[6],
           } else {
             return NULL;
           }
+        } else if (strcmp(fn->name, "APOAPSIS") == 0) {
+          // TODO: Check if body_idx is whithin bounds
+          int body_id = fn->args[0];
+          double bx = 0.0, by = 0.0;
+          if (body_id == norm->primary_id) {
+            bx = -norm->mu;
+          } else {
+            bx = 1.0 - norm->mu;
+          }
+
+          // At periapsis, vr flips from positive to negative
+
+          double dx_old = old_state[0] - bx;
+          double dy_old = old_state[1] - by;
+          double dx_new = state[0] - bx;
+          double dy_new = state[1] - by;
+
+          double vx_old = old_state[3];
+          double vy_old = old_state[4];
+          double vx_new = state[3];
+          double vy_new = state[4];
+
+          double vr_old = dx_old * vx_old + dy_old * vy_old;
+          double vr_new = dx_new * vx_new + dy_new * vy_new;
+
+          int should_fire = vr_old > 0 && vr_new <= 0;
+          if (should_fire) {
+            /* printf("Hit the periapsis check\n"); */
+            if (e->as.when.periodicity == EVENT_ONCE) {
+              e->consumed = 1;
+            }
+            return &e->as.when.action;
+          } else {
+            return NULL;
+          }
         } else if (strcmp(fn->name, "SPACECRAFT_WITHIN_DIST") == 0) {
           // TODO: Check if body_idx is whithin bounds
           int body_id = fn->args[0];
@@ -2043,10 +2188,10 @@ Action *poll_events_cr3bp(MissionDescription *mission, double state[6],
   return NULL;
 }
 
-void take_action_cr3bp(MissionDescription *mission, double state[6],
+void take_action(MissionDescription *mission, double state[6],
                        double old_state[6], Action *action,
-                       CR3BPNormalization *norm,
-                       CR3BPSimulationControls *controls) {
+                       SimulationNormalization *norm,
+                       SimulationControls *controls) {
   switch (action->type) {
   case ACTION_DRAW: {
     break;
@@ -2079,37 +2224,38 @@ void take_action_cr3bp(MissionDescription *mission, double state[6],
   }
 }
 
-CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission) {
+SimpleSimulationResults run_tbp(Arena *a, MissionDescription *mission) {
 
   // Preliminary calculations
 
   Entity *craft = &mission->entities[mission->entity_id_to_idx[0]];
   Entity *earth = &mission->entities[mission->entity_id_to_idx[1]];
-  Entity *moon = &mission->entities[mission->entity_id_to_idx[2]];
 
-  double L = moon->as.body.orbital_radius;
-  double m1 = earth->as.body.mass;
-  double m2 = moon->as.body.mass;
-  double M = m1 + m2;
-  double T = sqrt(L * L * L / (__G * M));
-  double mu = m2 / M;
+  double L  = earth->as.body.radius;
+  double m  = earth->as.body.mass;
+  double M  = m;
+  double T  = sqrt(L * L * L / (__G * M));
+  double mu = 1;
 
-  CR3BPParams params = {.mu = mu};
+  SimpleSimulationParams params = {.mu = mu};
 
-  CR3BPNormalization norm = {
-      .mu = mu, .T = T, .L = L, .primary_id = m1 > m2 ? earth->id : moon->id};
+	SimulationNormalization norm = {
+		.mu = mu,
+		.T  = T,
+		.L  = L
+	};
 
-  CR3BPSimulationControls sim_controls = {0};
+  SimulationControls sim_controls = {0};
 
-  double t = 0;
-  double tmax = mission->simulation_time / T;
-  double dt = mission->dt / T;
+  double t           = 0;
+  double tmax        = mission->simulation_time / T;
+  double dt          = mission->dt / T;
   double n_timesteps = floor(tmax / dt);
 
   // Initial state
 
   double state[6] = {
-      craft->x / L - mu,   craft->y / L,        craft->z / L,
+      craft->x / L,   craft->y / L,        craft->z / L,
       craft->vx / (L / T), craft->vy / (L / T), craft->vz / (L / T),
   };
   double old_state[6] = {};
@@ -2117,23 +2263,23 @@ CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission) {
 
   // Prepare results
 
-  CR3BPResults results = {0};
+  SimpleSimulationResults results = {0};
   results.display_options = mission->display_options;
   results.mu = mu;
-  results.T = T;
-  results.L = L;
-  results.t = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
-  results.x = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
-  results.y = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
-  results.z = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.T  = T;
+  results.L  = L;
+  results.t  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.x  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.y  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.z  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
   results.vx = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
   results.vy = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
   results.vz = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
 
-  results.t[results.num_results] = t;
-  results.x[results.num_results] = state[0];
-  results.y[results.num_results] = state[1];
-  results.z[results.num_results] = state[2];
+  results.t[results.num_results]  = t;
+  results.x[results.num_results]  = state[0];
+  results.y[results.num_results]  = state[1];
+  results.z[results.num_results]  = state[2];
   results.vx[results.num_results] = state[3];
   results.vy[results.num_results] = state[4];
   results.vz[results.num_results] = state[5];
@@ -2146,16 +2292,16 @@ CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission) {
   Action *action = NULL;
 
   // Initial events
-  action = poll_events_cr3bp(mission, state, old_state, t, &norm);
+  action = poll_events(mission, state, old_state, t, &norm);
   if (action != NULL) {
-    take_action_cr3bp(mission, state, old_state, action, &norm, &sim_controls);
+    take_action(mission, state, old_state, action, &norm, &sim_controls);
   }
   while (t < tmax && !sim_controls.early_quit) {
-    rk4_step(t, dt, state, cr3bp, 6, &params, scratch);
+    rk4_step(t, dt, state, tbp, 6, &params, scratch);
 
-    action = poll_events_cr3bp(mission, state, old_state, t + dt, &norm);
+    action = poll_events(mission, state, old_state, t + dt, &norm);
     if (action != NULL) {
-      take_action_cr3bp(mission, state, old_state, action, &norm,
+      take_action(mission, state, old_state, action, &norm,
                         &sim_controls);
     }
 
@@ -2176,14 +2322,183 @@ CR3BPResults run_cr3bp(Arena *a, MissionDescription *mission) {
   return results;
 }
 
-void dump_cr3bp_result(const char *path, CR3BPResults *results) {
+SimpleSimulationResults run_cr3bp(Arena *a, MissionDescription *mission) {
+
+  // Preliminary calculations
+
+  Entity *craft = &mission->entities[mission->entity_id_to_idx[0]];
+  Entity *earth = &mission->entities[mission->entity_id_to_idx[1]];
+  Entity *moon  = &mission->entities[mission->entity_id_to_idx[2]];
+
+  double L  = moon->as.body.orbital_radius;
+  double m1 = earth->as.body.mass;
+  double m2 = moon->as.body.mass;
+  double M  = m1 + m2;
+  double T  = sqrt(L * L * L / (__G * M));
+  double mu = m2 / M;
+
+  SimpleSimulationParams params = {.mu = mu};
+
+	SimulationNormalization norm = {
+		.mu         = mu,
+		.T          = T,
+		.L          = L,
+		.primary_id = m1 > m2 ? earth->id : moon->id
+	};
+
+  SimulationControls sim_controls = {0};
+
+  double t           = 0;
+  double tmax        = mission->simulation_time / T;
+  double dt          = mission->dt / T;
+  double n_timesteps = floor(tmax / dt);
+
+  // Initial state
+
+  double state[6] = {
+      craft->x / L - mu,   craft->y / L,        craft->z / L,
+      craft->vx / (L / T), craft->vy / (L / T), craft->vz / (L / T),
+  };
+  double old_state[6] = {};
+  memcpy(old_state, state, 6 * sizeof(double));
+
+  // Prepare results
+
+  SimpleSimulationResults results = {0};
+  results.display_options = mission->display_options;
+  results.mu = mu;
+  results.T  = T;
+  results.L  = L;
+  results.t  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.x  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.y  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.z  = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.vx = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.vy = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+  results.vz = (double *)arena_alloc(a, (n_timesteps + 1) * sizeof(double));
+
+  results.t[results.num_results]  = t;
+  results.x[results.num_results]  = state[0];
+  results.y[results.num_results]  = state[1];
+  results.z[results.num_results]  = state[2];
+  results.vx[results.num_results] = state[3];
+  results.vy[results.num_results] = state[4];
+  results.vz[results.num_results] = state[5];
+  results.num_results++;
+
+  // Simulation
+
+  double scratch[32];
+  size_t i = 0;
+  Action *action = NULL;
+
+  // Initial events
+  action = poll_events(mission, state, old_state, t, &norm);
+  if (action != NULL) {
+    take_action(mission, state, old_state, action, &norm, &sim_controls);
+  }
+  while (t < tmax && !sim_controls.early_quit) {
+    rk4_step(t, dt, state, cr3bp, 6, &params, scratch);
+
+    action = poll_events(mission, state, old_state, t + dt, &norm);
+    if (action != NULL) {
+      take_action(mission, state, old_state, action, &norm,
+                        &sim_controls);
+    }
+
+    // Push results
+    results.t[results.num_results]  = t + dt;
+    results.x[results.num_results]  = state[0];
+    results.y[results.num_results]  = state[1];
+    results.z[results.num_results]  = state[2];
+    results.vx[results.num_results] = state[3];
+    results.vy[results.num_results] = state[4];
+    results.vz[results.num_results] = state[5];
+    results.num_results++;
+
+    memcpy(old_state, state, 6 * sizeof(double));
+    t += dt;
+  }
+
+  return results;
+}
+
+void dump_tbp_result(const char *path, SimpleSimulationResults *results) {
+  FILE *f = fopen(path, "wb");
+  if (f == NULL) {
+    fprintf(stderr, "Could not open file: %s\n", path);
+  }
+
+  fprintf(f, "TBP\n");
+  fprintf(f, "SPEEDUP %d\n", results->display_options.speedup);
+  fprintf(f, "mu %lf\n", results->mu);
+  fprintf(f, "L %lf\n", results->L);
+  fprintf(f, "T %lf\n", results->T);
+  fprintf(f, "%zu\n", results->num_results);
+  for (size_t i = 0; i < results->num_results; i++) {
+    fprintf(
+				f, 
+				"%g %g %g %g %g %g %g\n", 
+				results->t[i],
+				results->x[i],  results->y[i],  results->z[i],
+				results->vx[i], results->vy[i], results->vz[i]);
+  }
+
+  fclose(f);
+}
+
+void read_tbp_result(Arena *a, const char *path, SimpleSimulationResults *results) {
+  FILE *f = fopen(path, "r");
+  if (f == NULL) {
+    fprintf(stderr, "Could not open file: %s\n", path);
+    exit(1);
+  }
+
+  char type[256];
+  fscanf(f, "%s", type);
+  if (strcmp(type, "TBP") != 0) {
+    fprintf(stderr, "Expected TBP, found %s\n", type);
+    exit(1);
+  }
+
+	results->mission_type = MISSION_TBP;
+  size_t num_results = 0;
+  fscanf(f, "%*s %d", &results->display_options.speedup);
+  fscanf(f, "%*s %lf", &results->mu);
+  fscanf(f, "%*s %lf", &results->L);
+  fscanf(f, "%*s %lf", &results->T);
+  fscanf(f, "%zu", &num_results);
+  results->num_results = num_results;
+
+  results->t  = (double *)arena_alloc(a, num_results * sizeof(double));
+  results->x  = (double *)arena_alloc(a, num_results * sizeof(double));
+  results->y  = (double *)arena_alloc(a, num_results * sizeof(double));
+  results->z  = (double *)arena_alloc(a, num_results * sizeof(double));
+  results->vx = (double *)arena_alloc(a, num_results * sizeof(double));
+  results->vy = (double *)arena_alloc(a, num_results * sizeof(double));
+  results->vz = (double *)arena_alloc(a, num_results * sizeof(double));
+
+	for (size_t i = 0; i < num_results; i++) {
+		fscanf(f,
+				"%lf %lf %lf %lf %lf %lf %lf",
+				&results->t[i],
+				&results->x[i],  &results->y[i],  & results->z[i],
+				&results->vx[i], &results->vy[i], &results->vz[i]
+				);
+	}
+
+  fclose(f);
+}
+
+void dump_cr3bp_result(const char *path, SimpleSimulationResults *results) {
   FILE *f = fopen(path, "wb");
   if (f == NULL) {
     fprintf(stderr, "Could not open file: %s\n", path);
   }
 
   fprintf(f, "CR3BP\n");
-  fprintf(f, "SHOW_JACOBI %d\n", results->display_options.show_jacobi);
+  fprintf(f, "SPEEDUP %d\n", results->display_options.speedup);
+  fprintf(f, "ZERO_VELOCITY_SURFACE %d\n", results->display_options.show_jacobi);
   fprintf(f, "mu %lf\n", results->mu);
   fprintf(f, "L %lf\n", results->L);
   fprintf(f, "T %lf\n", results->T);
@@ -2197,7 +2512,7 @@ void dump_cr3bp_result(const char *path, CR3BPResults *results) {
   fclose(f);
 }
 
-void read_cr3bp_result(Arena *a, const char *path, CR3BPResults *results) {
+void read_cr3bp_result(Arena *a, const char *path, SimpleSimulationResults *results) {
   FILE *f = fopen(path, "r");
   if (f == NULL) {
     fprintf(stderr, "Could not open file: %s\n", path);
@@ -2211,7 +2526,9 @@ void read_cr3bp_result(Arena *a, const char *path, CR3BPResults *results) {
     exit(1);
   }
 
+	results->mission_type = MISSION_CR3BP;
   size_t num_results = 0;
+  fscanf(f, "%*s %d", &results->display_options.speedup);
   fscanf(f, "%*s %d", &results->display_options.show_jacobi);
   fscanf(f, "%*s %lf", &results->mu);
   fscanf(f, "%*s %lf", &results->L);
@@ -2837,6 +3154,27 @@ void n_body_evaluate_kkt_state(double *x, void *gen_ctx){
 		tla_vector_set_value(ctx->KKT_rhs, ctx->dim_x + i, -c_val);
 	}
 
+}
+
+void read_simple_simulation_results(Arena *a, const char *path, SimpleSimulationResults *results) {
+  FILE *f = fopen(path, "r");
+  if (f == NULL) {
+    fprintf(stderr, "Could not open file: %s\n", path);
+    exit(1);
+  }
+
+  char type[256];
+  fscanf(f, "%s", type);
+  if (strcmp(type, "TBP") == 0) {
+		fclose(f);
+		read_tbp_result(a, path, results);
+  }else if(strcmp(type, "C3BP") == 0){
+		fclose(f);
+		read_cr3bp_result(a, path, results);
+	}else{
+		fclose(f);
+		read_cr3bp_result(a, path, results);
+	}
 }
 
 #endif

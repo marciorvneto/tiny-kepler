@@ -5,6 +5,9 @@ SIM_TIME     1200000
 SIM_DT       50
 INTEGRATOR   RK4
 
+DISPLAY
+SPEEDUP 64
+
 // Entities definition
 // body id name mass_kg radius_km [orbital_radius_km]
 // The spacecraft does not need to be defined

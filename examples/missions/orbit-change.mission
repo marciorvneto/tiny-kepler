@@ -1,0 +1,28 @@
+// Basic simulation parameters
+SIM_TYPE     TBP
+SIM_TIME     120000
+SIM_DT       50
+INTEGRATOR   RK4
+
+DISPLAY 
+ALTITUDE 0 1
+
+// Entities definition
+// body id name mass_kg radius_km [orbital_radius_km]
+// The spacecraft does not need to be defined
+// As it's always assigned an id = 0
+ENTITIES
+BODY 1 Earth 5.972e24 6378
+
+// Spacecraft initial state (relative to body 1)
+// Position: 480 km at perigee
+// Velocity: 8.2 km/s at perigee
+INITIAL_STATE
+POS 0 6858 0   0
+VEL 0 0    8.2 0
+
+// Events definition
+// Fire retrotockets at the apogee
+EVENTS
+WHEN APOAPSIS(1)               ONCE  MANEUVER DELTA_V 0.066 RETROGRADE
+WHEN SPACECRAFT_WITHIN_DIST(1, 6378) ONCE     END_SIMULATION

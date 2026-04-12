@@ -3,8 +3,7 @@
 #include "tiny-kepler.h"
 #include "raylib.h"
 
-#define MULT 800
-#define SPEEDUP 1
+#define DEFAULT_SPEEDUP 1
 
 typedef struct {
 	Shader jacobi_shader;
@@ -16,7 +15,7 @@ OrbitShaders load_shaders(){
 	return shaders;
 }
 
-void set_shader_uniforms(Camera2D *camera, CR3BPResults *results, OrbitShaders *shaders, size_t frame){
+void set_shader_uniforms(Camera2D *camera, SimpleSimulationResults *results, OrbitShaders *shaders, size_t frame){
 	int screenWidth = GetScreenWidth();
 	int screenHeight = GetScreenHeight();
 
@@ -60,13 +59,63 @@ void set_shader_uniforms(Camera2D *camera, CR3BPResults *results, OrbitShaders *
 
 }
 
+void get_initial_coords(
+		SimpleSimulationResults *results,
+		int screen_width,
+		int screen_height,
+		Camera2D *camera
+		)
+{
+	if(results->mission_type == MISSION_TBP){
+		camera->target = (Vector2){0, 0};
+		camera->offset = (Vector2){screen_width/2.0, screen_height/2.0};
+		return;
+	}
+	camera->target = (Vector2){0.5 - results->mu, 0};
+	camera->offset = (Vector2){screen_width/2.0, screen_height/2.0};
+}
+
+void position_main_entities(
+		SimpleSimulationResults *results,
+		size_t frame,
+		Vector2 *sc,
+		Vector2 *earth,
+		Vector2 *moon,
+		float   *earth_radius,
+		float   *moon_radius
+)
+{
+	*earth_radius = 6378 / results->L;
+	*moon_radius  = 1737.4 / results->L;
+	if(results->mission_type == MISSION_CR3BP){
+		sc->x    = results->x[frame];
+		sc->y    = results->y[frame];
+
+		earth->x = -results->mu;
+		earth->y = 0;
+
+		moon->x  = 1.0 - results->mu;
+		moon->y  = 0;
+		return;
+	}
+
+	sc->x    = results->x[frame];
+	sc->y    = results->y[frame];
+
+	earth->x = 0;
+	earth->y = 0;
+}
+
 int main(int argc, char **argv)
 {
 		Arena a = arena_create(10 * 1024 * 1024);
 
 		const char *path = argc > 1 ? argv[1] : "./results.out";
-		CR3BPResults results;
-		read_cr3bp_result(&a, path, &results);
+		SimpleSimulationResults results;
+		read_simple_simulation_results(&a, path, &results);
+		mission_t mission_type = results.mission_type;
+
+		int speedup = results.display_options.speedup > 0 ? results.display_options.speedup : DEFAULT_SPEEDUP;
 
     const int screenWidth = 1024;
     const int screenHeight = 768;
@@ -78,9 +127,14 @@ int main(int argc, char **argv)
 		OrbitShaders shaders = load_shaders();
 
 		Camera2D camera = {0};
-		camera.target = (Vector2){0.5 - results.mu, 0};
-		camera.offset = (Vector2){screenWidth/2.0, screenHeight/2.0};
-		camera.zoom = MULT;
+		get_initial_coords(&results, screenWidth, screenHeight, &camera);
+		camera.zoom = (screenHeight * 0.4f);
+
+		// Preallocating entities
+		Vector2 sc;
+		Vector2 earth;
+		Vector2 moon;
+		float earth_radius, moon_radius;
 
 		size_t frame = 0;
 		char buf[256];
@@ -103,7 +157,7 @@ int main(int argc, char **argv)
 			BeginDrawing();
 			ClearBackground(bg_color);
 
-			if(results.display_options.show_jacobi){
+			if(mission_type == MISSION_CR3BP && results.display_options.show_jacobi){
 				BeginShaderMode(shaders.jacobi_shader);
 					DrawRectangle(0, 0, screenWidth, screenHeight, BLANK);
 				EndShaderMode();
@@ -115,17 +169,30 @@ int main(int argc, char **argv)
 			// Trail
 			if(frame > 0){
 				for(size_t i = 0; i < frame - 1; i++){
+					// unsigned char alpha = (unsigned char)((float)i / frame * 255);
+					unsigned char alpha = 255;
 					DrawLineV(
 							(Vector2){results.x[i], results.y[i]},
 							(Vector2){results.x[i+1], results.y[i+1]},
-							GREEN
+							(Color){0, 228, 48, alpha} // GREEN with alpha
 							);
 				}
 			}
+
+			position_main_entities(&results, frame, &sc, &earth, &moon, &earth_radius, &moon_radius);
+
 			// Spacecraft
-			DrawCircleV((Vector2){results.x[frame], results.y[frame]}, 3.0/camera.zoom, RED);
-			DrawCircleV((Vector2){-results.mu, 0}, 3.0/camera.zoom, BLUE);
-			DrawCircleV((Vector2){1.0 - results.mu, 0}, 2.0/camera.zoom, GRAY);
+			DrawCircleV(sc, 4.0/camera.zoom, RED);
+
+			float earth_draw_r = earth_radius;
+			if (earth_draw_r * camera.zoom < 2.0f) earth_draw_r = 2.0f / camera.zoom;
+			DrawCircleV(earth, earth_draw_r, BLUE);
+			DrawCircleLinesV(earth, earth_draw_r, SKYBLUE);
+			if(mission_type == MISSION_CR3BP){
+				float moon_draw_r = moon_radius;
+				if (moon_draw_r * camera.zoom < 1.5f) moon_draw_r = 1.5f / camera.zoom;
+				DrawCircleV(moon, moon_draw_r, GRAY);
+			}
 			EndMode2D();
 
 			double V_norm = results.L / results.T;
@@ -140,7 +207,7 @@ int main(int argc, char **argv)
 
 			EndDrawing();
 
-				frame = (frame + SPEEDUP) % results.num_results;
+				frame = (frame + speedup) % results.num_results;
     }
 
     CloseWindow();

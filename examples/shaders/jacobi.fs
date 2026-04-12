@@ -38,9 +38,13 @@ void main()
 
     float C_zvc = x*x + y*y + 2.0*(1.0 - mu)/r1 + 2.0*mu/r2;
 
-    if (C_zvc < C_sat) {
-        finalColor = vec4(0.8, 0.6, 0.1, 0.35); 
-    } else {
-        finalColor = vec4(0.0);
-    }
+		float edge = 0.005 / camZoom;
+    float alpha = smoothstep(C_sat + edge, C_sat - edge, C_zvc);
+
+    //if (C_zvc < C_sat) {
+    //    finalColor = vec4(0.8, 0.6, 0.1, 0.35); 
+    //} else {
+    //    finalColor = vec4(0.0);
+    //}
+		finalColor = vec4(0.8, 0.5, 0.1, alpha * 0.4);
 }
