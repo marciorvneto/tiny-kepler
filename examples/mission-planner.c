@@ -6,7 +6,8 @@
 #include "tinyla.h"
 
 #define NUM_NODES 20
-#define NUM_ENTTS 5 // Spacecraft, Sun, Earth, Moon, Mars
+//#define NUM_ENTTS 5 // Spacecraft, Sun, Earth, Moon, Mars
+#define NUM_ENTTS 6 // Spacecraft, Sun, Earth, Moon, Mars, Venus
 void n_body_dump_to_file(NBodyIntegrationContext *ctx, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return;
@@ -118,6 +119,11 @@ int main(int argc, char **argv) {
     scenario.mass[4] = 6.4171e23;
     scenario.x[4]  = 227.939e6; scenario.y[4]  = 0.0;   scenario.z[4]  = 0.0;
     scenario.vx[4] = 0.0;       scenario.vy[4] = 24.07; scenario.vz[4] = 0.0;
+
+    // 5. Venus (~0.72 AU from Sun)
+    scenario.mass[5] = 4.8675e24;
+    scenario.x[5]  = 108.208e6; scenario.y[5]  = 0.0;   scenario.z[5]  = 0.0;
+    scenario.vx[5] = 0.0;       scenario.vy[5] = 35.02; scenario.vz[5] = 0.0;
 
     // 0. Spacecraft (LEO around Earth at 200 km altitude)
     scenario.mass[0] = 10000.0;
@@ -233,7 +239,7 @@ int main(int argc, char **argv) {
 		double lagrange[3]      = {0};
 		double tol              = 1e-4;
 
-		double tmax_guess = 4.5;
+		double tmax_guess = 3.5;
     for(size_t i = 0; i < NUM_NODES; i++){
       x[4 * i + 0] = 0.0;
       x[4 * i + 1] = 0.0;
